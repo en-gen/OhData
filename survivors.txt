@@ -1,0 +1,98 @@
+STATUS TOTALS: {'Ignored': 4619, 'CompileError': 2879, 'Killed': 123, 'Survived': 37, 'NoCoverage': 2, 'Timeout': 2}
+
+PER FILE (tested only):
+  CapturedState.cs                   {'Killed': 17, 'Survived': 2}
+  ETagValueFormatter.cs              {'Killed': 43, 'Survived': 7, 'NoCoverage': 1}
+  EdmClrTypeMap.cs                   {'Killed': 3}
+  InheritedTypeConfig.cs             {'Killed': 23, 'Survived': 1}
+  ODataKeyParser.cs                  {'Killed': 15, 'Survived': 8, 'NoCoverage': 1}
+  OperationSignatureValidation.cs    {'Killed': 22, 'Survived': 19, 'Timeout': 2}
+
+=== OperationSignatureValidation.cs  (21 survivors)
+  L56    Statement mutation     [TIMEOUT]
+         | ValidateCancellationTokenPlacement(method, subject);
+  L57    Statement mutation     [TIMEOUT]
+         | ValidateReturnType(method, operationName, isAction, subject, actionAlternative);
+  L86    String mutation      
+         | "The framework supplies the request's token itself and recognises only a " +
+  L87    String mutation      
+         | "non-nullable CancellationToken in the final position; a nullable one would be " +
+  L88    String mutation      
+         | "exposed as an OData parameter that no request could ever supply a value for. " +
+  L89    String mutation      
+         | "Declare it as 'CancellationToken' and make it the last parameter, or remove it.");
+  L96    String mutation      
+         | "the last parameter. The framework strips and supplies a TRAILING " +
+  L97    String mutation      
+         | "CancellationToken only, while the EDM omits one at any position -- so this " +
+  L98    String mutation      
+         | "operation would advertise one parameter list in $metadata and demand another at " +
+  L99    String mutation      
+         | "the route, and no request could satisfy it (there is no conversion from a query " +
+  L100   String mutation      
+         | "value to a CancellationToken). Move the CancellationToken to the end of the " +
+  L101   String mutation      
+         | "parameter list.");
+  L120   String mutation      
+         | $"{subject}: an OData function must return a value -- CSDL has no representation for " +
+  L121   String mutation      
+         | $"a function with no return type, so '{operationName}' cannot be written into " +
+  L123   String mutation      
+         | "(an action may return void/Task/ValueTask and produces 204 No Content).");
+  L126   Conditional (false) mutation 
+         | Type returnType = AsyncDispatchHelper.IsVoidAsyncReturn(rawReturn)
+  L138   String mutation      
+         | "OhData owns the HTTP envelope for a bound/unbound operation -- it writes the status " +
+  L139   String mutation      
+         | "code, the @odata.context and the response shape -- so an IResult would be " +
+  L140   String mutation      
+         | "serialized as a DTO (its Value/StatusCode properties would become the response " +
+  L141   String mutation      
+         | "body) and its type would be written into $metadata as the operation's return type. " +
+  L142   String mutation      
+         | "Return the value itself instead.");
+
+=== ODataKeyParser.cs  (8 survivors)
+  L30    Conditional (true) mutation 
+         | return rawKey.StartsWith("'") && rawKey.EndsWith("'") && rawKey.Length >= 2
+  L30    Equality mutation    
+         | return rawKey.StartsWith("'") && rawKey.EndsWith("'") && rawKey.Length >= 2
+  L30    Logical mutation     
+         | return rawKey.StartsWith("'") && rawKey.EndsWith("'") && rawKey.Length >= 2
+  L30    Logical mutation     
+         | return rawKey.StartsWith("'") && rawKey.EndsWith("'") && rawKey.Length >= 2
+  L30    String mutation      
+         | return rawKey.StartsWith("'") && rawKey.EndsWith("'") && rawKey.Length >= 2
+  L30    String mutation      
+         | return rawKey.StartsWith("'") && rawKey.EndsWith("'") && rawKey.Length >= 2
+  L59    Equality mutation    
+         | if (keyType == typeof(TimeOnly)) return TimeOnly.Parse(rawKey, CultureInfo.InvariantCulture);
+  L74    String mutation      
+         | throw new ODataKeyFormatException($"Cannot parse '{rawKey}' as {keyType.Name}.", ex);
+
+=== ETagValueFormatter.cs  (7 survivors)
+  L130   String mutation      
+         | TimeSpan ts => ts.ToString("c", CultureInfo.InvariantCulture),
+  L131   String mutation      
+         | Guid g => g.ToString("D", CultureInfo.InvariantCulture),
+  L204   Statement mutation   
+         | destination.WriteByte(TagNull);
+  L220   Statement mutation   
+         | if (immutable.IsDefault) { destination.WriteByte(TagNull); return; }
+  L296   Statement mutation   
+         | segments.Reverse();
+  L297   String mutation      
+         | string name = string.Join("+", segments);
+  L299   Conditional (false) mutation 
+         | return type.Namespace is null ? name : type.Namespace + "." + name;
+
+=== CapturedState.cs  (2 survivors)
+  L127   Logical mutation     
+         | if (value is not null && !value.GetType().IsValueType && value is not string) Found = true;
+  L127   Logical mutation     
+         | if (value is not null && !value.GetType().IsValueType && value is not string) Found = true;
+
+=== InheritedTypeConfig.cs  (1 survivors)
+  L150   CoalesceAssignmentExpression to SimpleAssignmentExpression mutation 
+         | union ??= new HashSet<string>(first, _unionComparer);
+
