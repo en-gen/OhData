@@ -373,3 +373,4 @@ AGENTS.md
 # Stryker.NET mutation-testing run output (spike: docs/spikes/stryker-mutation-testing.md)
 StrykerOutput/
 stryker-run.log
+survivors.txt

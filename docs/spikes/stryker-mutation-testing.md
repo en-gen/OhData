@@ -101,7 +101,10 @@ artifact. The findings below are the output that means anything.
 | `CapturedState.cs` | 17 | 2 | — | — |
 | `EdmClrTypeMap.cs` | 3 | 0 | — | — |
 
-Full dump: `survivors.txt`. HTML report (22 MB): `StrykerOutput/<run>/reports/stryker-pilot.html`.
+Every run writes its own `StrykerOutput/<timestamp>/reports/` — `stryker-pilot.html` to read,
+`stryker-pilot.json` to query. Both are gitignored: a survivor list is true of one commit and
+silently stale after the next touch to any of these six files, so the findings below carry the
+mutation they came from rather than pointing at a checked-in dump.
 
 ---
 
