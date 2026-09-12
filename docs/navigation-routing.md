@@ -19,7 +19,7 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
         ExpandEnabled = true;
 
         // No delegate: adds the nav property to $metadata, and (on an EF Core-backed GetQueryable)
-        // makes it SQL-JOIN-expandable automatically via $expand pushdown (#206) - no GET route.
+        // makes it SQL-JOIN-expandable automatically via $expand pushdown - no GET route.
         HasMany(x => x.Lines);
         HasOptional(x => x.Customer);
 
@@ -28,11 +28,11 @@ public class OrderProfile : EntitySetProfile<Guid, Order>
 }
 ```
 
-> **Delegate-less navigations and `$expand` (#206):** declaring a navigation **without** a delegate
+> **Delegate-less navigations and `$expand`:** declaring a navigation **without** a delegate
 > opts it **into** SQL-JOIN `$expand` pushdown; supplying a delegate (below) opts it **out** (the
 > delegate then owns expansion). Mental model: *write a delegate only when expansion needs real
 > logic; a plain relationship gets SQL-JOIN expansion for free.* See
-> [`$expand` pushdown](query-options.md#expand-pushdown-delegate-less-navigations-join-automatically-206)
+> [`$expand` pushdown](expand.md#expand-pushdown-delegate-less-navigations-join-automatically)
 > for the full behavior, eligibility, and fallback rules.
 
 ## Registering a navigation route
@@ -96,11 +96,11 @@ as "no children" (`[]`) for `HasMany`, or "no related entity" (`null`) for
 - Authorization from the parent profile is applied to navigation routes automatically — both the all-operations `RequireAuthorization()`/`RequireRoles()` and per-operation `ConfigureAuthorization(...)` (a nav read is `Read`, a nav `POST`/`$ref` write is `Create`/`Update`; `.RequireResource()` checks against the parent entity). **The parent profile's rule is the only one applied**: if the navigation's target type is also registered as its own, more strictly protected entity set, that set's rule is *not* consulted here, and `$expand` follows the same rule. `MapOhData()` warns when it spots the mismatch — see [Authorization is per-profile and does not compose across a navigation](authorization.md#authorization-is-per-profile-and-does-not-compose-across-a-navigation)
 - Navigation routes are tagged with the parent entity set name in OpenAPI/Swagger
 - For collection navigations, `$orderby`, `$top`, `$skip`, `$count`, and `$select` are honored on the returned collection via ad-hoc in-memory `IEnumerable`/`IEnumerable<T>.OrderBy` operations (not pushed down to the handler or to SQL). Options are applied in standard OData order: `$orderby`, then `$skip`, then `$top` (`$count` is captured after `$skip` but before `$top`, per spec - the count reflects the collection after skipping but before the page limit is applied). `$orderby` supports multiple sort keys (`Prop1 asc,Prop2 desc`) and is case-insensitive on the property name. An unknown property name in `$orderby` returns `400 Bad Request` (`InvalidQueryOption`), matching `$select`'s validation behavior.
-- Any **other** `$`-prefixed system query option returns `501 Not Implemented` (`UnsupportedQueryOption`) rather than being silently ignored (OData 4.0 §9.3.1 and Minimal conformance item 7, §13.1.1: parse the option or return 501 for unsupported functionality). Since #359 the rule is the `$` **sigil**, not a closed list of names: `$filter`, `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken` and `$deltatoken` are refused as before, and so is anything unrecognized (`$slect`, `$unknown`, a future spec's addition). A key without the `$` prefix is a custom query option (Part 2 §5.2) and is passed through untouched, and `$format` is accepted everywhere. To filter related data, expose the child entity set with its own profile and query it directly.
+- Any **other** `$`-prefixed system query option returns `501 Not Implemented` (`UnsupportedQueryOption`) rather than being silently ignored (OData 4.0 §9.3.1 and Minimal conformance item 7, §13.1.1: parse the option or return 501 for unsupported functionality). The rule is the `$` **sigil**, not a closed list of names: `$filter`, `$expand`, `$search`, `$apply`, `$compute`, `$skiptoken` and `$deltatoken` are refused as before, and so is anything unrecognized (`$slect`, `$unknown`, a future spec's addition). A key without the `$` prefix is a custom query option (Part 2 §5.2) and is passed through untouched, and `$format` is accepted everywhere. To filter related data, expose the child entity set with its own profile and query it directly.
 - **A SINGLE-VALUED navigation (`HasOptional`/`HasRequired`) implements none of them.** The
   bullet above describes the *collection* branch. `GET /{Set}({key})/{Nav}` is one route template with two handlers, and the single-valued handler serializes the related entity without reading the query string at all — so it accepts `$format` and refuses every other `$`-prefixed option, `$select` included. Read a projection of a single related entity from its own entity set instead.
-- `GET /{Set}({key})/{Nav}/$count` follows §11.2.9, the clause that governs a `/$count` segment, and that clause splits the options in two. It **refuses `$filter` and `$search`** (`501`): the count must be taken *after applying* those two, and this handler invokes the navigation delegate and counts what comes back, so it can apply neither — ignoring one would answer a **wrong number** under a `200`. It **accepts and ignores** `$top`, `$skip`, `$orderby` and `$expand`, which §11.2.9 says the count MUST NOT be affected by, plus `$select` (not named there, but it changes an item's shape rather than its membership) and `$format` (§11.2.9 disallows content negotiation on this segment; the body is `text/plain` regardless). Everything else — `$count`, `$apply`, `$compute`, any unrecognized `$`-name — is refused. It rejected nothing at all before #359. The accepted-and-ignored options behave exactly as they did from 1.0.0 through 1.6.0. See [query-options.md](query-options.md#count).
-- The per-route implemented sets for the whole read surface are tabulated in [query-options.md](query-options.md#unsupported-system-query-options-are-rejected-359-380-353).
+- `GET /{Set}({key})/{Nav}/$count` follows §11.2.9, the clause that governs a `/$count` segment, and that clause splits the options in two. It **refuses `$filter` and `$search`** (`501`): the count must be taken *after applying* those two, and this handler invokes the navigation delegate and counts what comes back, so it can apply neither — ignoring one would answer a **wrong number** under a `200`. It **accepts and ignores** `$top`, `$skip`, `$orderby` and `$expand`, which §11.2.9 says the count MUST NOT be affected by, plus `$select` (not named there, but it changes an item's shape rather than its membership) and `$format` (§11.2.9 disallows content negotiation on this segment; the body is `text/plain` regardless). Everything else — `$count`, `$apply`, `$compute`, any unrecognized `$`-name — is refused. The accepted-and-ignored options behave exactly as they did from 1.0.0 through 1.6.0. See [query-options.md](query-options.md#count).
+- The per-route implemented sets for the whole read surface are tabulated in [query-options.md](unsupported-query-options.md).
 
 ## `$expand`
 
@@ -113,7 +113,7 @@ GET /odata/Orders(id)?$expand=Lines
 ```
 
 There are two expansion paths, and **which one a navigation takes is decided purely by whether it
-was declared with a delegate** (#206):
+was declared with a delegate**:
 
 - **Delegate-less navigation** (a bare `HasMany`/`HasOptional`/`HasRequired`) → **SQL-JOIN
   pushdown.** On the EF Core-backed `GetQueryable` path the navigation is folded into the collection
@@ -132,15 +132,15 @@ was declared with a delegate** (#206):
 
 > **Mental model:** write a delegate only when expansion needs real logic; a plain relationship gets
 > SQL-JOIN expansion for free. See
-> [`$expand` pushdown](query-options.md#expand-pushdown-delegate-less-navigations-join-automatically-206)
+> [`$expand` pushdown](expand.md#expand-pushdown-delegate-less-navigations-join-automatically)
 > for eligibility (including multi-level nested `$expand` and `$levels`) and the silent-fallback rules
 > (non-EF source, a delegate-backed level, a level that is BOTH cyclic AND not member-init-projectable
-> (#323 — a plain bidirectional relationship pushes down fine), `$search`/`$compute`/`$apply` → the
+> (a plain bidirectional relationship pushes down fine), `$search`/`$compute`/`$apply` → the
 > navigation stays EDM-only for that request — the framework doesn't load it itself, but doesn't
 > guarantee it empty either: whatever the handler's own query already put there (a non-EF
 > `GetQueryable`'s eager load, a `GetAll` handler that populated it by hand) still serializes; never a
 > `500`). That "never a `500`" now holds even for a tracked, EF-relationship-fixed-up graph that is
-> genuinely cyclic (self-referential or bidirectional): as of #325/#326, response serialization
+> genuinely cyclic (self-referential or bidirectional): response serialization
 > itself is bounded by the `$expand` clause (a `SerializeBounded` walker), never by the object graph,
 > so a reference cycle among EDM-declared navigations is structurally unreachable — including on a
 > plain `GET` with no `$expand` at all.
@@ -153,7 +153,7 @@ it depends on which overload you registered:
   database-backed handler).
 - **Batch handler** (`batchGetAll`/`batchGet`) - called once per expanded property for the whole
   page: *P* calls total, regardless of *N*. Use this for EF Core-backed navigations; see
-  [query-options.md](query-options.md#expand) for a worked example and
+  [query-options.md](expand.md) for a worked example and
   [Batch-loaded navigation routes](#batch-loaded-navigation-routes) above for the API.
 
 Both delegate forms produce byte-identical `$expand` output; batch registration only changes the
@@ -166,7 +166,7 @@ delegate to compare against — the JOIN *is* the source of its related rows.)
 |---|---|---|
 | Returns related data as top-level response | ✅ | ❌ (embedded in parent) |
 | Supports filtering/ordering on related data | ❌ | ✅ (with nested options) |
-| Single SQL join (vs. handler calls) | ❌ (separate query per request) | ✅ for a **delegate-less** nav (SQL-JOIN pushdown, #206); ❌ for a **delegate-backed** nav — call count is *P* with a batch handler, *N×P* with a per-entity handler |
+| Single SQL join (vs. handler calls) | ❌ (separate query per request) | ✅ for a **delegate-less** nav (SQL-JOIN pushdown); ❌ for a **delegate-backed** nav — call count is *P* with a batch handler, *N×P* with a per-entity handler |
 | Works without `$expand` support on client | ✅ | ❌ |
 
 The two approaches are complementary - declare both to support both access patterns.
@@ -221,7 +221,7 @@ The `addRef`/`setRef` handler receives the raw `@odata.id` string from the reque
 
 `@odata.id` must be a JSON **string**. A missing member, or one whose value is a number, boolean,
 object, array or `null`, returns `400 Bad Request` with the OData error envelope and the handler is
-never invoked (#455) — a `null` used to reach the handler as an empty string under a `204`.
+never invoked — a `null` used to reach the handler as an empty string under a `204`.
 
 > **HTTP method note:** OData 4.0 §11.4.6 requires `POST /$ref` for collection navigations (adding a link)
 > and `PUT /$ref` for single-value navigations (replacing the link). OhData enforces this automatically.

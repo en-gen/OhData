@@ -44,7 +44,7 @@ not"; neither implements it.
 Names are compared **case-insensitively**, which matches Microsoft — `$Select` and `$TOP` are honoured
 by both.
 
-See [query-options.md](query-options.md#unsupported-system-query-options-are-rejected-359-380-353).
+See [query-options.md](unsupported-query-options.md).
 
 ### 2. `$search` with no search binder configured
 
