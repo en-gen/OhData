@@ -207,10 +207,68 @@ Because you assigned `GetQueryable`, `GetById`, `Post`, and `Delete` — but not
 those four routes exist and the update routes don't. That is the whole model: the profile is the
 contract.
 
+## Beyond the basics
+
+The rest of the surface rides other profile declarations - navigation properties (`HasMany`/`HasOptional`/`HasRequired`), `UseETag`, and `BindFunction`/`BindAction` - rather than the plain CRUD handlers of step 4. Each declaration registers its routes; the trailing comments show what you get:
+
+```csharp
+public class OrdersProfile : EntitySetProfile<int, Order>
+{
+    public OrdersProfile(AppDbContext db) : base(x => x.Id)
+    {
+        GetQueryable = () => db.Orders;
+
+        // Collection navigation. getAll gives the read routes; every parameter after it is
+        // OPTIONAL - supply only the ones whose route you want:
+        HasMany(
+            navigation: x => x.Lines,
+            getAll:    async (orderId, ct) => await db.Lines.Where(l => l.OrderId == orderId).ToListAsync(ct),
+                                          // GET /Orders({key})/Lines  (+ /Lines/$count)
+            post:      (orderId, line, ct) => /* … */,   // optional → POST /Orders({key})/Lines  (create a related entity)
+            addRef:    (orderId, lineId, ct) => /* … */, // optional → POST/PUT /Orders({key})/Lines/$ref  (link existing)
+            removeRef: (orderId, lineId, ct) => /* … */, // optional → DELETE   /Orders({key})/Lines/$ref  (unlink)
+            refTargetEntitySet: "Lines");                // optional → $ref routes emit @odata.id links
+
+        // Single-valued navigation → GET /Orders({key})/Customer.
+        HasOptional(
+            navigation: x => x.Customer,
+            get: async (orderId, ct) =>
+                await db.Orders.Where(o => o.Id == orderId).Select(o => o.Customer).FirstOrDefaultAsync(ct));
+
+        // ETag response header + If-Match concurrency on GET/PUT/PATCH/DELETE.
+        UseETag(x => x.RowVersion);
+
+        // Bound operations become routes. The entity-bound pair takes the key as its first parameter.
+        BindFunction(Discounted);       // GET  /Orders/Discounted?minOff=…
+        BindAction(Archive);            // POST /Orders/Archive
+        BindEntityFunction(Total);      // GET  /Orders({key})/Total
+        BindEntityAction(Approve);      // POST /Orders({key})/Approve
+    }
+
+    static Task<IEnumerable<Order>> Discounted(decimal minOff) => /* … */;
+    static Task Archive() => /* … */;
+    static Task<decimal> Total(int key) => /* … */;          // first parameter is the entity key
+    static Task Approve(int key, string note) => /* … */;    // first parameter is the entity key
+}
+```
+
+`HasMany(x => x.Lines)` on its own — with no handlers — registers no routes at all; it just declares the navigation for `$metadata` and `$expand`. The same optional-parameter pattern applies to `HasOptional`/`HasRequired`.
+
+See [navigation routing & `$ref`](../docs/navigation-routing.md), [property access](../docs/property-access.md), [deep insert](../docs/deep-insert.md), and [bound functions & actions](../docs/bound-operations.md) for the full details behind each declaration.
+
+And to *shrink* the surface instead of growing it: `Ignore(x => x.CostBasis)` hides a property
+from `$metadata`, query options, routes, and every request/response body — without touching the
+CLR model. **One exception:** overriding `AdvancedConfigure` takes the EDM out of OhData's hands,
+which drops `Ignore()`'s EDM half — the property is back in `$metadata` and query-addressable,
+though still absent from every response body. `MapOhData()` emits a startup `Warning` naming each
+affected property and the one-line remedy. See
+[ignoring properties](../docs/ignoring-properties.md).
+
 ## Where to next
 
 - **[EF Core + SQLite tutorial](ef-core-sqlite.md)** — swap the in-memory provider for a real
   relational database and watch OData query options become SQL.
 - **[Query options](../docs/query-options.md)** — the full `$filter`/`$orderby`/`$select`/`$expand`/`$count`/`$search` surface and the capability flags that gate it.
 - **[Architecture](../docs/architecture.md)** — how profiles become routes, and the design decisions behind it.
-- **[Navigation & `$ref` routing](../docs/navigation-routing.md)**, **[bound functions & actions](../docs/bound-operations.md)**, **[ETags & concurrency](../docs/etags.md)**, and **[authorization](../docs/authorization.md)** — grow the surface from here.
+- **[DTOs and EF entities](../docs/dtos-and-ef-entities.md)** — serve an API model that differs from the entity, with the query still pushed into SQL.
+- **[Authorization](../docs/authorization.md)** — per-operation and instance-level rules over your existing ASP.NET Core policies.

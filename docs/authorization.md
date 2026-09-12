@@ -1,6 +1,16 @@
 # Authorization
 
-OhData integrates with standard ASP.NET Core authentication and authorization - there is no OhData-specific auth system. The framework applies ASP.NET Core's own `RequireAuthorization` to the registered endpoints based on what you declare in the profile.
+OhData rides ASP.NET Core's own authentication and authorization - you keep your existing scheme,
+policies, roles and `IAuthorizationHandler`s, and profiles never reference an ASP.NET Core type.
+There is no OhData-specific auth system.
+
+What OhData adds on top is a *declaration* layer: five operation categories
+(`Read`/`Create`/`Update`/`Delete`/`Invoke`, plus the `Writes` and `All` selectors) that map to
+routes, `.RequireResource()` for instance-level checks, per-operation `Invoke(name, ...)` rules with
+their own startup validation, an `authorize` lambda on unbound operations, and a startup audit that
+warns about routes left anonymous in a registration that requires authorization elsewhere.
+Requirements are stored as plain policy/role/claim names and replayed onto the endpoints via
+ASP.NET Core's own `RequireAuthorization`; the evaluation is entirely ASP.NET Core's.
 
 ## Middleware setup
 
@@ -90,16 +100,16 @@ public class OrderProfile : EntitySetProfile<int, Order>
 
 Selectors: `.Read(...)`, `.Create(...)`, `.Update(...)`, `.Delete(...)`, `.Writes(...)` (= create+update+delete), `.All(...)` (every category), `.Invoke(...)` (all bound ops), and `.Invoke("Name", ...)` (one named bound operation, which takes precedence over a generic `.Invoke(...)`). Later category rules win on overlap.
 
-**`Invoke("Name", ...)` matches the operation name case-insensitively, and an unmatched name is refused at startup.** Both halves are [#525](https://github.com/en-gen/OhData/issues/525). The name is matched the way the route that serves the operation is matched, so `.Invoke("stamp", ...)` governs a `Stamp` function; before the fix that comparison was ordinal, so a miscased rule silently matched nothing and the operation fell back to the generic `.Invoke(...)` rule — or, with no generic rule, to **no requirement at all**. Because a *misspelled* name evaporates the same way and no comparer can rescue it, `app.MapOhData()` now throws `InvalidOperationException` when a named `Invoke` rule does not resolve to a bound operation the profile declares, naming the rule and listing the declared operations. There is no valid configuration in which a rule targets an operation that does not exist.
+**`Invoke("Name", ...)` matches the operation name case-insensitively, and an unmatched name is refused at startup.** The name is matched the way the route that serves the operation is matched, so `.Invoke("stamp", ...)` governs a `Stamp` function. A miscased rule would otherwise match nothing and fall back to the generic `.Invoke(...)` rule — or, with no generic rule, to **no requirement at all**. Because a *misspelled* name evaporates the same way and no comparer can rescue it, `app.MapOhData()` now throws `InvalidOperationException` when a named `Invoke` rule does not resolve to a bound operation the profile declares, naming the rule and listing the declared operations. There is no valid configuration in which a rule targets an operation that does not exist.
 
 **Exactly one `Invoke(name, …)` rule per bound operation, or startup throws.**
 [#546](https://github.com/en-gen/OhData/issues/546). Named rules are resolved last-write-wins, so
-once #525 made the match case-insensitive, two rules differing only in case collapsed onto each
+because the match is case-insensitive, two rules differing only in case collapse onto each
 other and **the order they were declared in decided whether the operation was protected**:
 
 ```csharp
 .Invoke("Stamp", i => i.RequireRole("admin")).Invoke("stamp", i => i.AllowAnonymous())
-// anonymous GET …/Stamp  ->  200        (protected before #525)
+// anonymous GET …/Stamp  ->  200
 
 .Invoke("stamp", i => i.AllowAnonymous()).Invoke("Stamp", i => i.RequireRole("admin"))
 // anonymous GET …/Stamp  ->  401
@@ -140,7 +150,7 @@ operation.
   otherwise-gated surface - but read the composition section below before relying on group-level auth
   as a floor, because it is not one.
 
-  > **The same call means something different on an unbound operation, and that is deliberate (#572).**
+  > **The same call means something different on an unbound operation, and that is deliberate.**
   > `AddFunction(op, a => a.AllowAnonymous())` does **not** emit `AllowAnonymousAttribute`; there it
   > means *"I am not adding a requirement"*, never *"I am removing yours"*, so a host-applied
   > `app.MapOhData().RequireAuthorization()` still covers it. One interface,
@@ -220,7 +230,7 @@ Key points:
   **requires a `GetById` handler** (enforced at startup). That is Read/Update/Delete, and also
   `Create` when the profile registers a navigation-`post` route (`POST /{Set}({key})/{Nav}`) and
   `Invoke` when it registers an entity-bound function or action — those two used to pass startup and
-  then fail every request with a 500 (#486). The two collection-level members of those categories
+  then fail every request with a 500. The two collection-level members of those categories
   need no `GetById` and are unaffected: the collection `POST` evaluates its `Create` requirement
   against the deserialized model directly, and a collection-bound operation's route has no key to
   load by. Not compatible with `AllowUpsert` create-on-`PUT` (a missing entity returns `404` before

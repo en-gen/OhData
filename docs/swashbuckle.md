@@ -76,7 +76,7 @@ also present on `GET /{EntitySet}/$count` and on the single-entity `GET /{Entity
 (which supports `$select`/`$expand` in its own right). Every field therefore means *"this route
 honours this option"*, never "this route is of kind X". Both of those routes used to pick up
 `$top`/`$skip`, because the filter added them on metadata *presence* alone while each route drops
-them — #467. The gate is now `TopSkipSupported`, decided once upstream in `OhDataEndpointFactory`
+them. The gate is `TopSkipSupported`, decided once upstream in `OhDataEndpointFactory`
 so the OpenAPI, NSwag and Swashbuckle companions cannot drift apart.
 
 ## Request bodies, typed collection responses, and read-path summaries

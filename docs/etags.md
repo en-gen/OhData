@@ -151,7 +151,7 @@ a received `If-Match` and performed the write with a `204`/`201`. That was a los
 relationship state which the handler could not prevent - the `addRef`/`setRef`/`removeRef`/`post`
 delegates receive only the key and the payload, so there was nowhere to check the header.
 
-The entity-bound **action** row is newer still (#566) and closed a MUST violation; see
+The entity-bound **action** row is newer still and closed a MUST violation; see
 [the remaining exclusion below](#collection-bound-and-unbound-actions-are-still-excluded) for the
 two families that genuinely cannot be keyed.
 

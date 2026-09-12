@@ -307,7 +307,7 @@ today — pulled directly from the "not targeted" / "known limitations" sections
   complex property is supported; a `PATCH` that should merge only some of a nested object's fields
   returns `400 Bad Request` rather than performing the merge.
 - **SQL column projection for `$select`.** On the `GetQueryable`/EF path, an eligible `$select` pushes a
-  column-pruned projection to SQL by default (#206, `SelectPushdownEnabled`), so the database-I/O benefit
+  column-pruned projection to SQL by default (`SelectPushdownEnabled`), so the database-I/O benefit
   for wide tables carries over. Ineligible requests (a model with no parameterless constructor, a
   setterless projected member, a non-EF provider, or `SelectPushdownEnabled = false`) fall back to
   fetching the full row and trimming the JSON response (preserving the configured naming policy — see

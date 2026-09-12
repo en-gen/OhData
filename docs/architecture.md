@@ -143,7 +143,7 @@ When both `GetQueryable` and `GetAll` are set, `GetQueryable` wins:
 A lower handler set alongside a higher one is **dead**: it is not a fallback, and it is not
 consulted for any route. Measured with both `GetQueryable` and `GetAll` set, `GetAll` was invoked
 zero times on the collection `GET`, on `/{Set}/$count`, and on that route's `$filter` fallback.
-Since #378 this is reported at `MapOhData()` with one `Warning` per entity set naming the winner and
+This is reported at `MapOhData()` with one `Warning` per entity set naming the winner and
 the dead handler, because nothing said so before at any log level — `Trace` included.
 
 ## `$select` - JSON post-processing
@@ -153,7 +153,7 @@ When `$select` is active, the framework:
 2. Serializes to `JsonNode`
 3. Removes non-selected property nodes from each item
 
-This is done instead of using `ISelectExpandWrapper.ToDictionary()` because OData's wrapper always produces PascalCase keys regardless of the configured naming policy - the `JsonNode` approach preserves whatever policy OhData is serializing with. Since #252 that policy is **PascalCase by default** (matching `$metadata`), so the two happen to agree by default; but a profile that opts into camelCase (`WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase)`) would diverge from the wrapper, which is exactly the inconsistency the `JsonNode` post-processing avoids.
+This is done instead of using `ISelectExpandWrapper.ToDictionary()` because OData's wrapper always produces PascalCase keys regardless of the configured naming policy - the `JsonNode` approach preserves whatever policy OhData is serializing with. That policy is **PascalCase by default** (matching `$metadata`), so the two happen to agree by default; but a profile that opts into camelCase (`WithJsonPropertyNamingPolicy(JsonNamingPolicy.CamelCase)`) would diverge from the wrapper, which is exactly the inconsistency the `JsonNode` post-processing avoids.
 
 ## Route templates and `MapGroup`
 

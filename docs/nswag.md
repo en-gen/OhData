@@ -23,7 +23,7 @@ This registers **both** the operation processor (documents the OData query param
 schema processor (schema fidelity for `Ignore(...)`d properties — see
 [below](#ignored-properties-omitted-from-schemas)).
 
-To also surface OhData's per-operation authorization in the document (#219/#220), pass the opt-in
+To also surface OhData's per-operation authorization in the document, pass the opt-in
 parameters — `securitySchemeId` emits an operation-level `security` requirement plus `401`/`403`
 responses referencing a scheme your app already defines, and `authRequirements` appends a
 human-readable requirements section to each secured operation's description:
@@ -79,7 +79,7 @@ app.UseSwaggerUi();        // optional interactive UI
 
 Routes with no `OhDataQueryOptionsMetadata` (non-OhData minimal API endpoints in the same app, or OhData routes that don't carry query-option metadata) are left untouched.
 
-Note that `OhDataQueryOptionsMetadata` is attached to more than the top-level collection GET route - it's also present on `GET /{EntitySet}/$count` and on the single-entity `GET /{EntitySet}({key})` route (which supports `$select`/`$expand` in its own right). Every field therefore means *"this route honours this option"*, never "this route is of kind X". The processor's `$top`/`$skip` guard used to check only "is metadata present and is `$top` absent", which documented paging on both of those routes even though each drops both options - #467. It now reads `TopSkipSupported`, and the decision is made once upstream in `OhDataEndpointFactory` rather than in each of the three companion packages.
+Note that `OhDataQueryOptionsMetadata` is attached to more than the top-level collection GET route - it's also present on `GET /{EntitySet}/$count` and on the single-entity `GET /{EntitySet}({key})` route (which supports `$select`/`$expand` in its own right). Every field therefore means *"this route honours this option"*, never "this route is of kind X". It now reads `TopSkipSupported`, and the decision is made once upstream in `OhDataEndpointFactory` rather than in each of the three companion packages.
 
 ## Request bodies, typed collection responses, and read-path summaries
 
@@ -110,7 +110,7 @@ Renaming covers the whole response graph, not just the top-level entity: nested 
 get their own component schema and are renamed too. NSwag models an inherited type as
 `allOf: [{$ref base}, {own props}]`, so the processor renames a derived type's own keys on that
 inline `allOf` member as well as on the schema itself, and the base class gets its own renamed
-component (#260).
+component.
 
 ## Ignored properties omitted from schemas
 

@@ -142,7 +142,7 @@ private Task Archive(Guid orderId, CancellationToken ct) => ...;
 only. CSDL requires a **function** to declare a return type, so a void-returning function cannot be
 written into `$metadata` at all; `BindFunction`/`BindEntityFunction`/`AddFunction` reject one at bind
 time with an `InvalidOperationException` naming the operation and pointing at the matching
-`Bind*Action`/`AddAction`. (Before #498 this was not checked, and `GetEdmModel()` died instead with a
+`Bind*Action`/`AddAction`. (Without this check `GetEdmModel()` would die with a
 raw `ArgumentNullException: 'returnType'` that named neither the profile nor the operation.)
 
 ### Signatures the framework rejects at bind time
@@ -157,7 +157,7 @@ raw `ArgumentNullException: 'returnType'` that named neither the profile nor the
 A `byte[]` return is declared as `Edm.Binary` (not `Collection(Edm.Byte)`), matching what the route
 actually serves.
 
-**An action may return the entity set's own type (#539).** `Microsoft.OData.ModelBuilder`'s
+**An action may return the entity set's own type.** `Microsoft.OData.ModelBuilder`'s
 `ActionConfiguration.Returns<T>()` / `.ReturnsCollection<T>()` refuse a CLR type already declared as
 an entity type and direct the caller to `ReturnsFromEntitySet` /
 `ReturnsCollectionFromEntitySet`, while the `FunctionConfiguration` twins accept it. OhData used to
@@ -174,12 +174,11 @@ only bind an operation's entity return to the entity set of the profile that dec
 failure is now OhData's own message, naming the operation and the remedies, rather than
 `Microsoft.OData.ModelBuilder`'s.
 
-### A collection-returning FUNCTION is paged like any other collection (#357)
-
+### A collection-returning FUNCTION is paged like any other collection
 A **bound function** whose result is a collection of the entity set's own type is bounded by the
 profile's `MaxTop` and served with a `@odata.nextLink` continuation, using exactly the semantics the
 `GetAll` collection route uses (see
-[Query options - `GetAll`](query-options.md#getall---simple-in-memory-path)):
+[Query options - `GetAll`](read-handlers.md#getall---simple-in-memory-path)):
 
 | Request | Behaviour |
 |---|---|
@@ -199,8 +198,7 @@ than `MaxTop` (default `1000`) entities: a client that reads `value` without fol
 No other system query option is applied to an operation result - `$filter`, `$orderby`, `$select`,
 `$expand` and `$count` are still ignored there, as they always were.
 
-### A collection-returning ACTION is bounded too, but cannot be continued (#543)
-
+### A collection-returning ACTION is bounded too, but cannot be continued
 A **bound action** whose result is a collection of the entity set's own type honours `$top` and
 `$skip` and validates them against `MaxTop` exactly as the function above does — same rules, same
 `400` messages. The one row that differs is the first:
@@ -233,13 +231,12 @@ there is no paging to drive. RFC 7240 makes preferences advisory and forbids cla
 `Preference-Applied` for one that was not applied, so ignoring it is spec-correct rather than a
 silent drop.
 
-Before #543 an action applied none of this: measured on `MaxTop = 10` over 25 rows, `POST /Set/Dump`
+An action used to apply none of this: on `MaxTop = 10` over 25 rows, `POST /Set/Dump`
 answered `200` with all 25 entities and no `@odata.nextLink`, and `$top=999`, `$top=5`, `$skip=20`
 and `$top=abc` were all likewise `200` with the full 25 — while the sibling *function* capped at 10
 with a continuation and `400`d `$top=999`.
 
-## System query options on an operation route (#359)
-
+## System query options on an operation route
 All six operation routes — collection-bound and entity-bound function and action, and the two
 unbound ones — refuse any `$`-prefixed query option they do not implement with
 **`501 Not Implemented`** (`UnsupportedQueryOption`). The implemented sets are small:
@@ -264,10 +261,10 @@ Three things worth knowing:
 - **The gate runs before parameter binding and before the handler delegate**, so a refused
   **action** invocation provably mutates nothing.
 
-Before #359 the operation routes had no gate at all, and `TryApplyOperationCollectionPaging` copies
+The operation routes used to have no gate at all, and `TryApplyOperationCollectionPaging` copies
 the *whole* incoming query string into the `@odata.nextLink` it builds — so an unrecognized option
 was echoed verbatim into a link the server generated. See
-[query-options.md](query-options.md#unsupported-system-query-options-are-rejected-359-380-353) for
+[query-options.md](unsupported-query-options.md) for
 the full `501`-vs-`400` taxonomy.
 
 ## EDM and `$metadata`
@@ -285,7 +282,7 @@ full behavior.
 
 **An operation handler cannot choose its own status code.** Earlier revisions of this page told you
 to *"catch the failure yourself and return `ODataError`-shaped `Results.Json(...)` /
-`Results.BadRequest(...)`"*. **Do not do that** — since #498 an `IResult` return type is refused at
+`Results.BadRequest(...)`"*. **Do not do that** — an `IResult` return type is refused at
 bind time, so a handler written that way now throws `InvalidOperationException` from the profile
 constructor and the app does not start. OhData owns the HTTP envelope for an operation route: it
 writes the status, the `@odata.context` and the response shape.
@@ -336,7 +333,7 @@ candidate, not a bug fix planned for this release — treat unbound-operation re
 unenveloped JSON when writing a client against them. Unbound operations are registered in the EDM
 as `FunctionImport`/`ActionImport` and appear in `GET /$metadata`.
 
-The **service document** lists only what can be invoked with nothing but its name (#468), and it is
+The **service document** lists only what can be invoked with nothing but its name, and it is
 generated from the same EDM container `$metadata` is written from, so the two cannot disagree:
 
 - a **parameterless** function import carries `IncludeInServiceDocument="true"` in the CSDL and is

@@ -62,7 +62,7 @@ declarative profile.
 
 ### If you are upgrading, read this
 
-`WithOpenTypes(false)` restores the pre-#389 shape, in which the container is an ordinary nested
+`WithOpenTypes(false)` restores the pre-open-types shape, in which the container is an ordinary nested
 declared property:
 
 ```csharp
@@ -74,7 +74,7 @@ services.AddOhData(o => o
 **Does this affect me?** Ask one question: *do any of your complex types have an
 `IDictionary<string, object>` member?* If none do, this setting is inert in either position — the
 registration's serializer options are not even derived, no write body is walked, nothing is logged,
-and every response including error responses is byte-identical to a pre-#389 build. If any do, read
+and every response including error responses is byte-identical to a build with open types switched off. If any do, read
 on. **You do not have to work this out by hand: `MapOhData()` logs one warning per affected complex
 type at startup, naming the CLR type and the container member.**
 
@@ -180,7 +180,7 @@ an in-memory `IQueryable`:
 ([above](#filter-orderby-dynamic-key)), naming *any* undeclared key is a way to read declared
 properties the allowlist denies. That row is provider-independent: it returns `200` and leaks the
 denied declared property on EF Core too, where the `$filter`/`$orderby` rows instead return `500`
-(#390) — a different failure, not an enforcement.
+ — a different failure, not an enforcement.
 
 The open-type-ness is precisely what opens the hole. Against a **closed** complex type all three
 dynamic-key requests are rejected with `400 InvalidQueryOption` ("Could not find a property named
@@ -515,7 +515,7 @@ check closes the server-side-data hole only.
 > body rather than as `500`.** Operation routes do not run through the group-level exception filter
 > that renders the OData error envelope, so the response has already begun before the throw. That is
 > pre-existing and applies to *any* handler fault on those routes, not just this one — it is tracked
-> separately as **#396** and is not addressed here. On entity-set routes the `500` + envelope
+> separately as [**#396**](https://github.com/en-gen/OhData/issues/396) and is not addressed here. On entity-set routes the `500` + envelope
 > contract above holds.
 
 ### This is a deliberate divergence from `Microsoft.AspNetCore.OData`
@@ -613,7 +613,7 @@ declared property — an EDM/wire mismatch that predates this feature and is not
 { "Id": 1, "Name": "n", "Extras": { "dyn": "v" } }
 ```
 
-Put the bag on a complex type instead. Tracked by issue #398.
+Put the bag on a complex type instead. Tracked by [#398](https://github.com/en-gen/OhData/issues/398).
 
 > **Correction.** Earlier releases of this document said the blocker was `PATCH`: that
 > `Delta<TModel>` "has no mechanism" for routing an undeclared key, because the PATCH loop resolves
@@ -713,8 +713,8 @@ translates to SQL and pushes down normally.
   data that serializes perfectly well, whereas here a case-differing spelling is exactly the bypass.
   With `Secret` withheld and an ordinal set, a body key `secret` misses the declared lookup (the
   member is no longer in the contract), misses the withheld set, and is bagged as an ordinary
-  dynamic key — measured, and fixed in review of #398. It ships ahead of the entity-root widening
-  (#398) rather than alongside it, so the security-critical half is not landing at the same moment as
+  dynamic key — measured, and fixed in review. It ships ahead of the entity-root widening
+  rather than alongside it, so the security-critical half is not landing at the same moment as
   its first real exercise. A write naming a withheld property is **silently dropped**, matching what
   the closed-type path already does for unknown members and what `Microsoft.AspNetCore.OData` does
   (`ODataInputFormatter` deliberately clears ODataLib's `ThrowOnUndeclaredPropertyForNonOpenType`);
@@ -724,7 +724,7 @@ translates to SQL and pushes down normally.
 
 ## Interaction with `$expand` and cycle safety
 
-OhData serializes clause-bounded (`#325`/`#326`): a navigation property is never handed to
+OhData serializes clause-bounded: a navigation property is never handed to
 `System.Text.Json` unless the `$expand` clause asked for it, which is what makes a reference cycle
 in the underlying object graph structurally unreachable.
 
@@ -734,9 +734,8 @@ in the emitted JSON; it adds no object to the graph the serializer walks, applie
 container member of a complex type, and never touches an entity type or a navigation property.
 
 > A complex type **can** carry EDM navigations — `ODataConventionModelBuilder` creates one for every
-> entity-typed member of a complex type — and since `#507` those are suppressed exactly like an
-> entity type's, so the clause-bounded guarantee above holds for them too. (Before `#507` they were
-> served inline on every read, and a reference cycle through one was a 500 on a plain `GET`.) The
+> entity-typed member of a complex type — and those are suppressed exactly like an
+> entity type's, so the clause-bounded guarantee above holds for them too. The
 > flattening modifier and the suppression modifier still cannot contend for a member: the container
 > is a dictionary member, which the EDM never calls a navigation.
 

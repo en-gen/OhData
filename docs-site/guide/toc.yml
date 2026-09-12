@@ -47,12 +47,22 @@
           href: ../../docs/polymorphism.md
         - name: Bound functions & actions
           href: ../../docs/bound-operations.md
+        - name: DTOs and EF entities
+          href: ../../docs/dtos-and-ef-entities.md
         - name: API model / entity separation
           href: ../../docs/api-model-mapping.md
     - name: Querying
       items:
+        - name: Choosing a read handler
+          href: ../../docs/read-handlers.md
         - name: Query options
           href: ../../docs/query-options.md
+        - name: "$expand and nested paging"
+          href: ../../docs/expand.md
+        - name: Complexity limits
+          href: ../../docs/complexity-limits.md
+        - name: Unsupported system query options
+          href: ../../docs/unsupported-query-options.md
     - name: Errors
       items:
         # #581's whole surface -- returning a rejection, ConfigureExceptions/Map<TException>, and
