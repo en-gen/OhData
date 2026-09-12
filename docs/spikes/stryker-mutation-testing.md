@@ -15,7 +15,8 @@ for the conditions somebody thought to check. Stryker is the systematic form of 
 
 ## Status
 
-Spike. Nothing here is wired into CI, and nothing in `src/` changed.
+Spike. Nothing is wired into CI and nothing in `src/OhData.AspNetCore/` changed. Tests WERE
+added under `src/OhData.AspNetCore.Tests/` -- see Outcome.
 
 ## Running it
 
@@ -68,7 +69,7 @@ ELAPSED: 53s
 
 That 53 s is the number `perTest` has to avoid paying per mutant.
 
-## Results
+## Results: the first run
 
 Run at `414d633` + this branch's config, 2026-09-11, 19m38s wall.
 
@@ -283,38 +284,149 @@ simply the ceiling on what mutation testing can see in this codebase as currentl
 
 ---
 
-## What this pilot establishes
+## Outcome: tests written, and where it stopped
 
-1. Mutation testing **works** on this repo and is affordable at this scope: 19m38s for 162 mutants
-   against a suite that is 84% integration tests, which `perTest` coverage analysis is what makes
-   possible.
-2. It found **six substantive gaps** in ~1,000 lines of the most carefully-documented code in the
-   project — including one (F1) on a stated security boundary and one (F3) in the concurrency
-   primitive whose failure mode the file's own guard exists to prevent.
-3. Every one of those six sits behind a claim `CLAUDE.md` states as settled. That is the argument
-   for the technique here: this codebase's documentation is unusually specific, which makes an
-   unkilled mutant an unusually sharp signal — it names a sentence that is not true of the tests.
-4. The **CS0165 cascade**, not runtime, is what bounds how far this can scale.
+Three runs. The tests are in `src/OhData.AspNetCore.Tests/`; nothing in `src/OhData.AspNetCore/`
+changed.
 
-## Not done
+| Run | Killed | Survived | Timeout | Score | Suite |
+|---|---|---|---|---|---|
+| 1 — as found | 123 | 37 | 2 | 76.22% | 3,181 |
+| 2 — F1–F5, F7 tests | 144 | 18 | 0 | 87.80% | 3,208 |
+| 3 — F6 test | 145 | **17** | 0 | **88.41%** | 3,209 |
 
-- No tests were written. F1–F4 each want one, and F1 wants it soonest.
-- Nothing is wired into CI. A `--since` diff-scoped run on changed files is the plausible shape, but
-  a threshold gate should wait until the CS0165 question is answered — a score that swings on which
-  methods happened to survive Safe Mode is not a gate.
-- The other five test projects were not measured.
+**Four of the six files are now clean**: `ODataKeyParser.cs`, `CapturedState.cs`,
+`InheritedTypeConfig.cs`, `EdmClrTypeMap.cs` — 0 survivors each.
 
-## Reading a survivor
+### What was added
 
-A survivor is a finding, not a failure. Three things it can mean, and they need different responses:
+| Finding | Test | Kills |
+|---|---|---|
+| F1 | `RuntimeTypeConfigResolutionTests.WithheldNames_UnionAcrossThreeLevels_KeepsTheMiddleLevel` + an `RtcLeafBag` third level | 1 |
+| F2 | `ODataKeyParserTests` — the malformed/edge key shapes, plus a formatter→parser round trip | 6 |
+| F3 | `ETagValueFormatterTests.Append_*` — the null tag, the `default` ImmutableArray, and the framing | 4 |
+| F4 | `CapturedStateTests` — the constant judgment in both directions | 2 |
+| F5 | `StableTypeName_KeepsNestedTypesDistinct_AndNamesThemOutwardIn` (strengthened from NotEqual to the literal chain) + a global-namespace fixture | 2 |
+| F6 | `ACustomKeyType_ParsesThroughItsRegisteredTypeConverter` | 1 |
+| F7 | Remedy-sentence assertions in `OperationBindValidationTests` | 5 of 19 |
 
-1. **A real coverage gap.** The mutated behaviour matters and nothing checks it. Write the test.
-2. **An equivalent mutant.** The change genuinely cannot alter observable behaviour (a redundant
-   bound, a defensive branch that is unreachable given the callers). Nothing to do but recognise it
-   — and Stryker cannot tell this apart from (1), which is why a mutation score is never read as a
-   percentage to maximise.
-3. **Dead or untestable code.** The mutant survives because the statement does not matter. That is
-   worth knowing on its own.
+Two existing tests were **strengthened rather than added to**, which is the honest shape of the
+finding in both cases:
 
-Only (1) is a bug in the tests. Chasing the score without that split is how mutation testing turns
-into busywork.
+- `StableTypeName_KeepsNestedTypesDistinct` asserted only that two nested types differ. Dropping
+  `segments.Reverse()` keeps them differing, so the test could not see it. It now asserts the
+  literal chain, because that string *is* the hash discriminator.
+- `OperationBindValidationTests` asserted the interpolated parts of each message (the operation
+  name, `IResult`, `BindAction`) and none of the literal text. It now also asserts each message's
+  **remedy sentence**.
+
+### F6 is worth reading, because the obvious test did not work
+
+`keyType == typeof(TimeOnly)` → `!=` survived run 2 even with a `TimeOnly` test present. Inverted,
+a `TimeOnly` key falls through to the `TypeDescriptor` converter and parses **identically** — so
+the mutation is invisible from that input. The difference is only observable from a type that
+reaches that line and is *not* `TimeOnly`, and `Guid`/`DateTimeOffset`/`DateOnly` are all matched
+earlier. It took a custom `TypeConverter` key, which also closed the parser's documented converter
+fallback — previously untested.
+
+The general lesson: *the test that covers the mutated line is not necessarily the test that kills
+the mutant.*
+
+### The 17 that remain, and why they stay
+
+**Three are provably equivalent — no test can kill them, because no behaviour distinguishes them.**
+
+- `ETagValueFormatter.cs:130` (`"c"` → `""`) and `:131` (`"D"` → `""`). Both types document the
+  empty string as meaning the default specifier. Measured on .NET 10.0.11 rather than assumed:
+  `TimeSpan.ToString("")` and `Guid.ToString("")` are byte-identical to `"c"` and `"D"`.
+- `OperationSignatureValidation.cs:126`, the `IsVoidAsyncReturn` ternary. Its branches yield `void`
+  and `Task`; the only consumer of the result is `typeof(IResult).IsAssignableFrom(...)`, which
+  answers `false` for both.
+
+Killing any of these would mean asserting that a specific literal appears in the source — pinning
+the implementation, not the behaviour.
+
+**Fourteen are explanatory prose in #498's three messages, and are declined deliberately.** The
+remedy sentences are asserted; sentences like *"the EDM omits one at any position -- so this
+operation would advertise one parameter list in $metadata and demand another at the route"* are
+not. Killing them needs `Assert.Equal` over whole paragraphs, which constrains nothing a caller can
+observe and fails the next time someone improves the wording.
+
+That 5-of-19 split is the most useful thing this exercise produced: **the tool ranked all nineteen
+message mutants identically, and only reading them separated the contract from the commentary.**
+
+### So "clean" was not reached, and should not be
+
+88.41% with 17 survivors — 3 impossible, 14 declined — is where this stops. The remaining points
+are purchasable only with tests that would be argued against in review. A gate set above this
+number would be a gate that rewards writing them.
+
+---
+
+## Is this a good quality gate — especially for agent-generated tests?
+
+Partly, and the qualifier matters more than the answer. What follows is drawn from this spike, not
+from the technique's reputation.
+
+### Where it is genuinely better than coverage
+
+The characteristic failure of a generated test is the **vacuous assertion** — code is executed and
+then something that cannot fail is asserted. `var x = Parse(input); Assert.NotNull(x);` reaches
+100% line coverage of `Parse` and constrains nothing. Coverage rewards that exactly; mutation
+testing is structurally immune to it, because a vacuous test kills no mutants. It measures
+*constraint*, which is the property actually wanted, and it is a materially harder target to fake.
+
+This spike is evidence for that. `KeyParsingTests` covers `ODataKeyParser` end to end and is not a
+bad test file — but it exercises the parser only through a route, with well-formed keys, so **six
+independent ways to break string-key parsing** sat there unobserved. No coverage report would ever
+have said so. The same for `ETagValueFormatter.Append`, which had no direct coverage at all, and
+for the `InheritedTypeConfig` union, where the existing test was correct, deliberate, and *one
+contributor short* of constraining the thing its own doc comment says it protects.
+
+### Where it inverts, and this session demonstrated it
+
+**Pointed at a survivor list with "make it clean", the shortest path is to assert the implementation
+back to itself.** Those tests kill mutants and are worse than no test: they fail on every
+legitimate refactor, and a team that hits enough of them starts deleting tests.
+
+This was not hypothetical here. Sixteen of the 37 survivors were `String` mutations blanking
+fragments of #498's three bind-time messages. The score-maximising move is
+`Assert.Equal(<entire paragraph>)`, which kills all sixteen. What went in instead asserts the
+**remedy sentence** — the actionable, contractual part — and deliberately leaves the explanatory
+prose free to be reworded. That is the right test and a worse score. An agent optimising for a clean
+run does not make that distinction, because nothing in the signal contains it.
+
+**Equivalent mutants make "clean" unreachable, and chasing it does the damage.**
+`OperationSignatureValidation.cs:126` is one: the ternary's two branches yield `void` and `Task`
+respectively, and the only consumer of the result is `typeof(IResult).IsAssignableFrom(...)`, which
+answers `false` for both. No test can distinguish them, because no behaviour distinguishes them.
+Establishing that took reading three methods. An agent instructed to iterate until the run is clean
+will not stop there — it will keep writing tests, each more contorted than the last, about a
+difference that does not exist. **This is the single biggest hazard in using the tool as a gate
+rather than as a report.**
+
+**The percentage is not a quantity worth gating on.** 76.22% was computed over the 162 mutants that
+ran, out of 7,735 created — the rest were filtered by scope or discarded by the CS0165 cascade. A
+threshold on that number would mostly be measuring which methods happened to survive Safe Mode.
+
+### What it is actually good for
+
+- **As a review input: strongly yes**, and most of all for generated tests. "Did this test constrain
+  anything?" is precisely the review question, and this answers it mechanically instead of by
+  reading. A survivor in code a PR claims to have tested is a specific, checkable objection.
+- **As a CI gate: only in a narrow form.** Diff-scoped (`--since`), over changed files, reporting a
+  survivor *list* rather than a percentage, and advisory rather than blocking.
+- **The defensible gate is directional, not absolute**: *a change that adds tests should kill
+  mutants that survived before it.* That is immune to the equivalent-mutant problem, needs no
+  invented threshold, and cannot be satisfied by a vacuous test.
+
+### The specific recommendation for agent-written tests
+
+Use it, and **keep the triage away from whoever is optimising for green**. The judgment — real gap
+vs. equivalent mutant vs. legitimately-don't-care — is the whole value, and it is the part an agent
+aiming at a clean run is worst at, because "clean" and "correct" come apart exactly there.
+
+Handing an agent the survivor list and saying "make it clean" turns a measurement into a target.
+The honest split from this session: F1–F4 produced tests worth keeping on their own merits, which
+is the tool working. F7 produced pressure to pin paragraphs of prose, which is the tool being
+misread. Both came out of one run, and only reading them told them apart.
