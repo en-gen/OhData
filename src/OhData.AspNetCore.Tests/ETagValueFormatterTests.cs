@@ -250,10 +250,6 @@ public class ETagValueFormatterTests
         Assert.Equal(
             "OhData.AspNetCore.Tests.ETagValueFormatterTests+OuterB+Shared",
             ETagValueFormatter.StableTypeName(typeof(OuterB.Shared)));
-
-        Assert.NotEqual(
-            ETagValueFormatter.StableTypeName(typeof(OuterA.Shared)),
-            ETagValueFormatter.StableTypeName(typeof(OuterB.Shared)));
     }
 
     /// <summary>
@@ -324,8 +320,10 @@ public class ETagValueFormatterTests
     {
         Assert.NotEqual(Appended("ab", "c"), Appended("a", "bc"));
         Assert.NotEqual(Appended("abc"), Appended("ab", "c"));
-        // A binary buffer and the text that spells it are different values.
-        Assert.NotEqual(Appended(new byte[] { 1, 2 }), Appended(""));
+        // A binary buffer and the string whose UTF-8 encoding is those same two bytes. The TAG
+        // is what separates them, so the frame contents alone are not relied on. Written as
+        // escapes: raw control characters in source are invisible in a diff and in review.
+        Assert.NotEqual(Appended(new byte[] { 1, 2 }), Appended("\u0001\u0002"));
     }
 
     // ── Selector-type allowlist ────────────────────────────────────────────────────
