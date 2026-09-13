@@ -165,7 +165,7 @@ reject the release.
      only the cross-version diff is off) and **uncommented here, pointing at the major just
      published**. Suspending rather than suppressing keeps the repo free of a
      `CompatibilitySuppressions.xml` whose entries would permanently record a break that is
-     deliberate and already in the CHANGELOG. First applied for 2.0.0 (#581).
+     deliberate and already in the CHANGELOG. First applied for 2.0.0.
    Release PRs (`release/X.Y.Z` → `main`) must likewise be merged with a merge commit, never
    squashed. Squash remains the right choice for ordinary feature PRs only.
 

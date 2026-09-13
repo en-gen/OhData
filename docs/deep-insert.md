@@ -167,8 +167,7 @@ Opting in changes what the handler *receives* on those verbs, not what the respo
 with `Location`/`OData-EntityId`/`Preference-Applied` headers, no body. The handler still receives
 and persists the full graph — only the *response* is suppressed.
 
-## Limiting request-body size (#203)
-
+## Limiting request-body size
 Deep-insert graphs are the largest bodies OhData typically accepts, so a request-body-size limit is
 the natural guard. Set `MaxRequestBodyBytes` — globally via `WithDefaults`, or per entity set on the
 profile (the profile value overrides the global default):
@@ -194,7 +193,7 @@ the body is deserialized. Enforcement is twofold: an oversized `Content-Length` 
 and the per-request Kestrel `MaxRequestBodySize` is set so a chunked / no-`Content-Length` body is
 bounded during read (its overflow is mapped to the same `413`).
 
-### The default ceiling ([#474](https://github.com/en-gen/OhData/issues/474))
+### The default ceiling
 
 `EntitySetDefaults.MaxRequestBodyBytes` defaults to `EntitySetDefaults.DefaultMaxRequestBodyBytes`
 — **30,000,000 bytes**, which is Kestrel's own default `MaxRequestBodySize`.
@@ -268,8 +267,7 @@ If you want a nested graph on `PUT`/`PATCH`, set `AllowDeepWrites = true` and ow
 handler — the framework passes the graph through and does nothing else with it (no transaction, no
 relationship fixup, no `$metadata` advertisement).
 
-## Non-nullable properties are checked at the boundary (#355, #544, #545)
-
+## Non-nullable properties are checked at the boundary
 This page owns *what the handler receives from a write body*, and the strip above is not the only
 thing that happens to one. Since [#355](https://github.com/en-gen/OhData/issues/355) OhData also
 validates the body against **its own `$metadata`** before the handler runs.
@@ -279,7 +277,7 @@ the framework's own `$metadata` declares that property `Nullable="false"`, is an
 `400 Bad Request` (`code: "InvalidBody"`, `target:` the property) and the handler never runs.
 
 It applies uniformly to the collection `POST`, `PUT`, `PATCH`, the navigation-`POST` create route
-and the structural-property writes. Before #355 such a body reached the handler and the persistence
+and the structural-property writes. Such a body used to reach the handler, and the persistence
 layer's rejection surfaced as a generic `500` — measured on the shipped TestBench,
 `POST /v1/Movies {"Title":null}` returned `500` carrying EF's *"Required properties '{'Title'}' are
 missing"*.
@@ -329,7 +327,7 @@ value the client is not expected to send. It defaults to `true`.
 | `@odata.bind` present anywhere in the body | `501 Not Implemented` (OData error, `code: "NotImplemented"`) |
 | Malformed / empty JSON body | `400 Bad Request` (OData error) |
 | Non-JSON `Content-Type` | `415 Unsupported Media Type` |
-| A property the body **names** with an explicit `null` where `$metadata` says `Nullable="false"` | `400 Bad Request` (`code: "InvalidBody"`, `target:` the property) — before the handler runs; see [Non-nullable properties are checked at the boundary](#non-nullable-properties-are-checked-at-the-boundary-355-544-545) |
+| A property the body **names** with an explicit `null` where `$metadata` says `Nullable="false"` | `400 Bad Request` (`code: "InvalidBody"`, `target:` the property) — before the handler runs; see [Non-nullable properties are checked at the boundary](#non-nullable-properties-are-checked-at-the-boundary) |
 | `Post` handler returns `null` | **`500 Internal Server Error`** + the OData error envelope (`code: "InternalServerError"`), with the real exception logged |
 
 ## Not supported (documented non-goals)

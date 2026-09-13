@@ -45,7 +45,7 @@ foreach (var p in page.Items) { ... }
 
 `ToListAsync`, `ToPageAsync`, `ToAsyncEnumerable` and `GetAsync` bind four envelope members (`@odata.context`, `@odata.count`, `@odata.nextLink`, `value`) and **drop every other OData annotation**. System.Text.Json cannot bind an `@`-bearing member to a CLR property, so anything the server attached to an individual entity is discarded.
 
-That is invisible until it isn't. A server configured with [`ExpandPagingEnabled`](../query-options.md#nested-server-driven-paging-expandpagingenabled-313) answers an over-large `$expand` with a **prefix** of the related collection plus a nested `{Nav}@odata.nextLink` saying so — and through the ordinary read path that truncated collection is indistinguishable from a complete one.
+That is invisible until it isn't. A server configured with [`ExpandPagingEnabled`](../expand.md#nested-server-driven-paging-expandpagingenabled) answers an over-large `$expand` with a **prefix** of the related collection plus a nested `{Nav}@odata.nextLink` saying so — and through the ordinary read path that truncated collection is indistinguishable from a complete one.
 
 Three terminal operations preserve annotations instead:
 

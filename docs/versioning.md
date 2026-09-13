@@ -161,8 +161,7 @@ Two profiles with the same `EntitySetName` in a single registration throw
 `/v1/Products` and `/v2/Products` coexist.
 
 The profile-type check is the cross-cutting one: the same type in two registrations throws, as does
-the same type twice in one registration. It fires from `AddEntitySetProfile<T>()` — and, since
-#424, identically from the assembly-scanning overloads (`AddProfilesFrom`,
+the same type twice in one registration. It fires from `AddEntitySetProfile<T>()` — and, identically from the assembly-scanning overloads (`AddProfilesFrom`,
 `AddProfilesFromAssemblyOf<T>`, `AddProfilesFromAssembly`), which route through the same guard — so
 the failure surfaces while services are being configured rather than at map time, regardless of
 which registration path discovered the type first.

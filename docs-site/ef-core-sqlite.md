@@ -106,7 +106,7 @@ public class ProductProfile : EntitySetProfile<int, Product>
         MaxTop = 50;
 
         // Delegate-less navigation: declaring the relationship with NO delegate opts $expand=Category
-        // into SQL-JOIN pushdown (#206). On the EF Core-backed GetQueryable path the framework folds
+        // into SQL-JOIN pushdown. On the EF Core-backed GetQueryable path the framework folds
         // it into an Include, so one JOIN'd query loads the page AND its categories — no delegate to
         // write, no N+1. (Supply a get/batchGet delegate only when expansion needs custom logic —
         // filtering, ordering, authorization; that opts the nav back OUT of pushdown and also gives
@@ -272,7 +272,7 @@ Nested and multi-level expands push the same way: `$expand=Category($expand=…)
 (bounded by `MaxExpansionDepth`). That is the entire point of the `GetQueryable` path: the
 filtering, ordering, paging, projection, **and** expansion happen **inside the database**, so
 adding `$expand` never reintroduces N+1. (A navigation declared *with* a delegate keeps using
-that handler instead — see the [`$expand` pushdown reference](../docs/query-options.md#expand-pushdown-delegate-less-navigations-join-automatically-206).)
+that handler instead — see the [`$expand` pushdown reference](../docs/expand.md#expand-pushdown-delegate-less-navigations-join-automatically).)
 
 ## Going further with the sample
 

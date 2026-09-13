@@ -311,6 +311,10 @@ anything else needs a handler that decides what a write to it means.
 
 ## When you do not need this
 
+If the model differs from the entity only by a projection you are happy to write by hand — flattened
+members, a subset of columns, a `batchGetAll` navigation — you do not need a package at all:
+[DTOs and EF entities](dtos-and-ef-entities.md) covers that, dependency-free.
+
 If you have DDL rights on the database, a **view** plus an entity mapped to it is still the
 zero-code answer: EF Core sees a normal entity with real navigations, and OhData needs to know
 nothing. Reach for this package when the API shape has to differ from the storage shape and you
