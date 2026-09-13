@@ -104,7 +104,7 @@ and the immutable-key stubs.
 | Condition | Status |
 |---|---|
 | Entity not found | `404 Not Found` |
-| Property value is `null` | `204 No Content` (§11.2.3.1 — *"A `$value` request for a property that is null results in a 204 No Content response"*). Answered `404` through 1.7.0; corrected in 2.0.0 by [#369](https://github.com/en-gen/OhData/issues/369), which also made it agree with the sibling `/{Property}` route |
+| Property value is `null` | `204 No Content` (§11.2.3.1 — *"A `$value` request for a property that is null results in a 204 No Content response"*). Agrees with the sibling `/{Property}` route |
 | Property is a complex type | `400 Bad Request` (no raw representation — see below) |
 | Otherwise | `200 OK`, raw body |
 
