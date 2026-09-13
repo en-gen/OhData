@@ -4,9 +4,9 @@ Ranks by FAILURE-MODE SILENCE, not by count: a survivor matters when the wrong b
 describes would ship without anyone noticing. The output is a list to decide about once, not a
 score to chase.
 
-Usage: triage.py <report.json> [out.md]
+Usage: stryker-triage.py <report.json> [out.md]
 """
-import json, io, os, re, sys, collections
+import json, os, re, sys, collections
 
 REPORT = sys.argv[1]
 OUT = sys.argv[2] if len(sys.argv) > 2 else None
@@ -19,9 +19,6 @@ CONCERN = {
     # A -- disclosure boundaries. A wrong answer SERVES data that should be withheld.
     'IgnoredPropertyJsonOptions.cs': ('A', 'disclosure: which property names are withheld from the wire'),
     'OhDataAuthRequirementsText.cs': ('A', 'disclosure: which auth detail reaches a generated document'),
-    # B, not A: #481's ENFORCEMENT was refused by owner ruling, so this only emits a Warning.
-    # A wrong answer is a missing or spurious diagnostic, not a bypass.
-    'NavigationTargetAuthorization.cs': ('B', '#481 cross-navigation auth WARNING (diagnostic, not a gate)'),
     'InheritedTypeConfig.cs': ('A', 'disclosure: withheld-name resolution up the base chain'),
     'OpenTypeJsonOptions.cs': ('A', 'disclosure + write-path validation over dynamic keys'),
     'ModelBoundAllowlists.cs': ('A', '#458: two profiles over one CLR type must not union allowlists'),
@@ -36,6 +33,7 @@ CONCERN = {
     'DeltaExpressionHelper.cs': ('A', 'write path: selector -> property name'),
 
     # B -- advertise-vs-serve and refusal shape. Wrong, but inspectable.
+    'NavigationTargetAuthorization.cs': ('B', '#481 cross-navigation auth WARNING (diagnostic, not a gate)'),
     'OhDataQueryOptionsMetadata.cs': ('B', 'advertises which options a route honours'),
     'OhDataApiDescriptionProvider.cs': ('B', 'OpenAPI description surface'),
     'SchemaPropertyCasing.cs': ('B', 'schema names must match what the serializer emits'),
@@ -123,15 +121,14 @@ CONCERN.update({
 # A line whose job is to BUILD a message: an exception, a log call, or an accumulated
 # validation error. Wrong is loud or inspectable whatever the mutator does to it.
 PROSE = re.compile(r'throw new|Log(Warning|Debug|Error|Information|Trace|Critical)\(|'
-                   r'errors\.Add\(|^\s*"[A-Z][^"]{25,}"|Exception\(')
+                   r'errors\.Add\(|^"[A-Z][^"]{25,}"|Exception\(')
 # A string that IS a contract rather than prose.
-CONTRACT = re.compile(r'ToString\("|"@odata|"\$|"O"|"c"|"D"|ContentType|MediaType|"true"|"false"|'
-                      r'Header|"W/|charset|application/')
+CONTRACT = re.compile(r'ToString\("|"@odata|"\$|ContentType|MediaType|"true"|"false"|'
+                      r'Header|application/')
 
 
 def bucket(fname, mutator, code):
-    unmapped = fname not in CONCERN
-    concern, why = CONCERN.get(fname, ('U', 'unclassified -- no concern recorded'))
+    concern = CONCERN.get(fname, ('U', ''))[0]   # no CONCERN entry is 'U', so 'U' == unmapped
     line = code.strip()
 
     if mutator == 'String mutation':
@@ -141,20 +138,19 @@ def bucket(fname, mutator, code):
             return 'C', 'message/log prose'
         # An unmapped file must never be DECIDED by this branch. "Not evidently a contract"
         # is a judgment about the string, and nobody has made one about this file yet.
-        if unmapped:
+        if concern == 'U':
             return 'U', 'unclassified -- string in a file with no concern recorded'
         return 'C', 'string, not evidently a contract'
 
-    # Prose is prose whatever the mutator. Gating this on String mutation left Statement and
-    # Block mutations over `errors.Add(...)` / `throw new ...` inheriting the file's concern,
-    # which put startup-refusal bookkeeping in tier A.
+    # Prose is prose whatever the mutator -- gating this on String mutation puts
+    # errors.Add / throw new Statement mutants in the file's tier.
     if PROSE.search(line):
         return 'C', 'message/log prose (non-string mutator)'
 
     return concern, mutator
 
 
-r = json.load(io.open(REPORT, encoding='utf-8'))
+r = json.load(open(REPORT, encoding='utf-8'))
 rows = []
 for path, f in r['files'].items():
     fname = os.path.basename(path.replace('\\', '/'))
@@ -168,24 +164,27 @@ for path, f in r['files'].items():
         rows.append({'file': fname, 'line': ln, 'mutator': m.get('mutatorName', '?'),
                      'status': m['status'], 'tier': tier, 'why': why, 'code': code.strip()[:100]})
 
-tiers = collections.Counter(x['tier'] for x in rows)
-surv = sum(1 for x in rows if x['status'] == 'Survived')
 # Survived and NoCoverage are both "nothing objected", but they are NOT the same finding:
 # Survived means a test ran and passed anyway; NoCoverage means no test reached the line.
-# Keep them separate in every headline figure.
+TIERS = (('A', 'Decide about', 'DECIDE ABOUT -- a wrong answer here is SILENT and harmful'),
+         ('B', 'Review', 'REVIEW -- wrong but inspectable'),
+         ('U', 'Unclassified', 'UNCLASSIFIED -- no concern recorded; decide before trusting the bucket'),
+         ('C', 'Dropped', 'DROP -- message prose, log-only, or not a contract'))
+
+by_tier = collections.defaultdict(list)
+for x in rows:
+    by_tier[x['tier']].append(x)
+s_by = collections.Counter(x['tier'] for x in rows if x['status'] == 'Survived')
+surv = sum(s_by.values())
+
 print('SURVIVED: %d   UNCOVERED: %d   TOTAL: %d' % (surv, len(rows) - surv, len(rows)))
 print('tiers: %s' % ' '.join(
-    '%s=%d(%ds/%du)' % (t, tiers[t],
-                        sum(1 for x in rows if x['tier'] == t and x['status'] == 'Survived'),
-                        sum(1 for x in rows if x['tier'] == t and x['status'] != 'Survived'))
-    for t in ('A', 'B', 'U', 'C') if tiers[t]))
+    '%s=%d(%ds/%du)' % (t, len(by_tier[t]), s_by[t], len(by_tier[t]) - s_by[t])
+    for t, _, _ in TIERS if by_tier[t]))
 print()
 
-for tier, label in (('A', 'DECIDE ABOUT -- a wrong answer here is SILENT and harmful'),
-                    ('B', 'REVIEW -- wrong but inspectable'),
-                    ('U', 'UNCLASSIFIED -- no concern recorded; decide before trusting the bucket'),
-                    ('C', 'DROP -- message prose, log-only, or not a contract')):
-    sel = [x for x in rows if x['tier'] == tier]
+for tier, _, label in TIERS:
+    sel = by_tier[tier]
     byfile = collections.Counter(x['file'] for x in sel)
     print('=== TIER %s  (%d)  %s' % (tier, len(sel), label))
     for fn, n in byfile.most_common():
@@ -194,11 +193,11 @@ for tier, label in (('A', 'DECIDE ABOUT -- a wrong answer here is SILENT and har
     print()
 
 if OUT:
-    with io.open(OUT, 'w', encoding='utf-8', newline='') as fh:
+    with open(OUT, 'w', encoding='utf-8', newline='') as fh:
         fh.write('# Mutation-survivor triage\n\n')
         fh.write('Ranked by failure-mode silence. %d survivors + uncovered mutants.\n\n' % len(rows))
-        for tier, label in (('A', 'Decide about'), ('B', 'Review'), ('U', 'Unclassified'), ('C', 'Dropped')):
-            sel = [x for x in rows if x['tier'] == tier]
+        for tier, label, _ in TIERS:
+            sel = by_tier[tier]
             fh.write('## Tier %s -- %s (%d)\n\n' % (tier, label, len(sel)))
             if tier == 'C':
                 fh.write('Message prose, log-only statements, and strings that are not contracts. '
