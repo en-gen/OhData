@@ -9,18 +9,11 @@ namespace OhData.AspNetCore.Tests;
 /// Direct coverage for <see cref="CapturedState.IsCapturedByExpression"/>'s constant judgment.
 /// </summary>
 /// <remarks>
-/// <para>
-/// #483 and #488 both turn on one line — <c>value is not null &amp;&amp; !value.GetType().IsValueType
-/// &amp;&amp; value is not string</c> — and it was reachable only through the profile/cache seam,
-/// which observes the CONSEQUENCE (is the compiled delegate shared) rather than the judgment. A
-/// mutation run showed both <c>&amp;&amp;</c>s could become <c>||</c> with nothing objecting.
-/// </para>
-/// <para>
-/// The judgment is not free in either direction. A false positive costs an
-/// <c>Expression.Compile()</c> on <b>every request</b> that reaches the route — #483 measured
-/// 2.5–3.5×, about +0.4 ms — while a false negative is the disposed/stale scoped dependency the
-/// whole mechanism exists to prevent. So both directions are asserted here.
-/// </para>
+/// #483 and #488 both turn on one line, and it was otherwise reachable only through the
+/// profile/cache seam, which observes the CONSEQUENCE (is the compiled delegate shared) rather
+/// than the judgment. Both directions are asserted because both cost: a false positive pays an
+/// <c>Expression.Compile()</c> per request, a false negative is the stale scoped dependency the
+/// mechanism exists to prevent.
 /// </remarks>
 public class CapturedStateTests
 {
@@ -55,14 +48,12 @@ public class CapturedStateTests
         Assert.False(Captured<string>(x => x.Name));
         // string: a reference type, and the clause that exempts it by name.
         Assert.False(Captured<string>(x => x.Name + "suffix"));
-        // Value types: an int literal and an enum member.
+        // A value-typed constant. (An enum comparison lifts to an Int32 constant in the
+        // expression tree, so it is this same case rather than a distinct one.)
         Assert.False(Captured<int>(x => x.Count + 3));
-        Assert.False(Captured<bool>(x => x.Day == DayOfWeek.Tuesday));
-        Assert.False(Captured<bool>(x => x.Count > 0));
         // A null constant. The node is visited with a null Value, which must be skipped before
         // anything dereferences it.
         Assert.False(Captured<bool>(x => x.Parent == null));
-        Assert.False(Captured<string>(x => x.Name ?? "n/a"));
     }
 
     /// <summary>
@@ -84,15 +75,11 @@ public class CapturedStateTests
         Assert.True(Captured<int>(x => x.Count + captured));
     }
 
-    /// <summary>
-    /// A static is read at invocation time and is per-process by construction, so it is not an
-    /// instance capture and must not disable the cache.
-    /// </summary>
-    [Fact]
-    public void AStaticRead_IsNotACapture() =>
-        Assert.False(Captured<string>(x => x.Name + StaticStamp));
-
-    private static string StaticStamp => "static";
+    // A static read was asserted here as "not a capture". Removed: a static member is a
+    // MemberExpression with a null Expression, so it produces no ConstantExpression at all and
+    // the probe could not have answered otherwise however line 127 is mutated. CLAUDE.md's
+    // "a static field is read at INVOCATION time" is true of the C# compiler, not of a judgment
+    // this code makes -- there is nothing here to pin.
 
     private static bool Captured<T>(Expression<Func<Row, T>> selector) =>
         CapturedState.IsCapturedByExpression(selector);

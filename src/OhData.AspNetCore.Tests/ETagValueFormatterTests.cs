@@ -236,10 +236,8 @@ public class ETagValueFormatterTests
     /// <summary>Nested types stay distinct even though <c>Type.Name</c> drops the declaring
     /// type, and the chain reads OUTWARD-IN.</summary>
     /// <remarks>
-    /// The distinctness half alone does not constrain the ordering: dropping the
-    /// <c>segments.Reverse()</c> yields <c>Shared+OuterA+...</c>, which is still stable and still
-    /// distinct from its sibling, so a mutation run killed nothing here. The chain is asserted
-    /// literally because the produced string IS the hash discriminator.
+    /// Distinctness alone does not constrain the ORDER — reversing the chain keeps the two
+    /// distinct — and the produced string IS the hash discriminator, so it is asserted literally.
     /// </remarks>
     [Fact]
     public void StableTypeName_KeepsNestedTypesDistinct_AndNamesThemOutwardIn()
@@ -279,12 +277,10 @@ public class ETagValueFormatterTests
     /// A null contributes a tag byte, and that byte is the whole of its contribution.
     /// </summary>
     /// <remarks>
-    /// Removing it would make a null contribute NOTHING, so for a profile with more than one
-    /// selector (<c>ETagSelectors</c> is a list) <c>[null, X]</c> and <c>[X]</c> would serialize
-    /// identically and hash to one ETag — two entities sharing an entity tag, which makes
-    /// <c>If-Match</c> a silent no-op between them. That is #351's failure mode reached from a
-    /// different direction, and a mutation run found nothing objecting to it: the whole encoding
-    /// had no direct coverage.
+    /// Without it a null contributes NOTHING, so for a profile with more than one selector
+    /// (<c>ETagSelectors</c> is a list) <c>[null, X]</c> and <c>[X]</c> hash to one ETag — two
+    /// entities sharing an entity tag, which makes <c>If-Match</c> a silent no-op between them.
+    /// That is #351's failure mode reached from a different direction.
     /// </remarks>
     [Fact]
     public void Append_TagsNull_SoAnAbsentValueIsNotTheSameAsNoValue()

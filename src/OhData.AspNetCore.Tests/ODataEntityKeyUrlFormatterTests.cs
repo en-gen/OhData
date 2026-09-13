@@ -1,5 +1,4 @@
 using System;
-using System.Globalization;
 using OhData;
 using Xunit;
 
@@ -10,25 +9,18 @@ namespace OhData.AspNetCore.Tests;
 /// trip that <see cref="ODataKeyParser"/> reads back.
 /// </summary>
 /// <remarks>
-/// <para>
-/// A mutation sweep put this file at 5 killed / 10 survived — the worst ratio in the core package.
-/// Its output is wire contract: every <c>Location</c>, <c>Content-Location</c>,
-/// <c>OData-EntityId</c> and <c>@odata.id</c> the server emits is built here, and a client is
-/// expected to GET it back. A wrong format specifier does not throw; it ships a URL that no longer
-/// addresses the entity.
-/// </para>
-/// <para>
-/// Each case asserts the LITERAL before percent-encoding and then the round trip through the
-/// parser. The literal pins the specifier (dropping <c>"O"</c> silently truncates a
-/// <see cref="DateTime"/> to second precision); the round trip pins that the two halves agree,
-/// which is the property the pair exists for and which neither half can state alone.
-/// </para>
+/// Its output is wire contract: a client is expected to GET back the <c>Location</c> /
+/// <c>@odata.id</c> the server emits. Each case pins the LITERAL before percent-encoding,
+/// because the specifier is the contract — dropping <c>"O"</c> truncates a
+/// <see cref="DateTime"/> to second precision without throwing — and the round-trip theory
+/// pins that the two halves agree, which neither half can state alone.
 /// </remarks>
 public class ODataEntityKeyUrlFormatterTests
 {
     /// <summary>
-    /// The literal, before percent-encoding. Routing decodes a path segment before the parser sees
-    /// it, so this is also exactly what <see cref="ODataKeyParser.Parse"/> is handed.
+    /// The literal, before percent-encoding -- a close model of what routing hands the parser,
+    /// which decodes the segment first. (Not identical in every case: <c>%2F</c> is the known
+    /// place ASP.NET Core path handling is not a plain unescape.)
     /// </summary>
     private static string Literal(object key) =>
         Uri.UnescapeDataString(ODataEntityKeyUrlFormatter.Format(key));
@@ -51,7 +43,8 @@ public class ODataEntityKeyUrlFormatterTests
         Assert.Equal("42", Literal(42));
         Assert.Equal("-7", Literal(-7));
         Assert.Equal("9007199254740993", Literal(9007199254740993L));
-        // Invariant, so a comma-decimal culture cannot change the URL the server emits.
+        // Formatted invariantly. (Not asserted under a comma-decimal culture here; the
+        // invariance is stated by the source, not pinned by this input.)
         Assert.Equal("1.5", Literal(1.5m));
     }
 
@@ -65,8 +58,17 @@ public class ODataEntityKeyUrlFormatterTests
             "3fa85f64-5717-4562-b3fc-2c963f66afa6",
             Literal(Guid.Parse("3fa85f64-5717-4562-b3fc-2c963f66afa6")));
 
+    /// <summary>
+    /// A <see cref="char"/> key is single-quoted by the writer -- and #677 is that the parser
+    /// cannot read that back, which is why <c>char</c> is absent from the round-trip theory
+    /// below. This pins the writer's current behaviour only; do not read it as the pair working.
+    /// </summary>
     [Fact]
-    public void CharKey_IsSingleQuoted() => Assert.Equal("'x'", Literal('x'));
+    public void CharKey_IsSingleQuoted_ButDoesNotRoundTrip_See677()
+    {
+        Assert.Equal("'x'", Literal('x'));
+        Assert.Throws<ODataKeyFormatException>(() => ODataKeyParser.Parse(Literal('x'), typeof(char)));
+    }
 
     /// <summary>
     /// Round-trip ("O") for the two instant types: the parser reads them with

@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using OhData;
 using Xunit;
 
@@ -10,18 +9,11 @@ namespace OhData.AspNetCore.Tests;
 /// authorization detail is safe to put in a generated document.
 /// </summary>
 /// <remarks>
-/// <para>
-/// A mutation sweep found this file at <b>34 mutants, none of them covered by any test</b> — the
-/// largest wholly-uncovered file in the core package. That matters more than the count suggests:
-/// <see cref="AuthRequirementDisclosure"/> exists to keep exact claim VALUES out of a public
-/// OpenAPI document, and its own remarks say such a value "can be an internal identifier". Nothing
-/// verified that <see cref="AuthRequirementDisclosure.Kinds"/> actually withholds them.
-/// </para>
-/// <para>
-/// It is also shared deliberately: both the OpenAPI and NSwag companions render through it so the
-/// two documents stay byte-identical (#220). A change here moves two packages at once, which is
-/// the other reason it should not have been the least-constrained file in the assembly.
-/// </para>
+/// <see cref="AuthRequirementDisclosure.Kinds"/> exists to keep exact claim VALUES out of a
+/// public OpenAPI document — its own remarks note such a value "can be an internal identifier" —
+/// so the withholding is asserted in both directions. The exact sentences are contract rather
+/// than prose: both the OpenAPI and NSwag companions render through this one renderer so their
+/// documents stay byte-identical (#220).
 /// </remarks>
 public class OhDataAuthRequirementsTextTests
 {
@@ -50,7 +42,6 @@ public class OhDataAuthRequirementsTextTests
         string? text = Render(AuthRequirementDisclosure.Kinds, Claim("tenant_id", "acme-internal-42"));
 
         Assert.Equal("Requires claim `tenant_id`.", text);
-        Assert.DoesNotContain("acme-internal-42", text!, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -73,10 +64,8 @@ public class OhDataAuthRequirementsTextTests
             "Requires claim `scope` = `read` or `write`.",
             Render(AuthRequirementDisclosure.Full, Claim("scope", "read", "write")));
 
-        string? kinds = Render(AuthRequirementDisclosure.Kinds, Claim("scope", "read", "write"));
-        Assert.Equal("Requires claim `scope`.", kinds);
-        Assert.DoesNotContain("read", kinds!, StringComparison.Ordinal);
-        Assert.DoesNotContain("write", kinds!, StringComparison.Ordinal);
+        Assert.Equal("Requires claim `scope`.",
+            Render(AuthRequirementDisclosure.Kinds, Claim("scope", "read", "write")));
     }
 
     /// <summary>

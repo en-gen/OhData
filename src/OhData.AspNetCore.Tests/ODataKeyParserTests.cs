@@ -8,19 +8,11 @@ namespace OhData.AspNetCore.Tests;
 /// Unit-level coverage for <see cref="ODataKeyParser"/>'s string branch and its single throw site.
 /// </summary>
 /// <remarks>
-/// <para>
-/// <c>KeyParsingTests</c> exercises the parser only through a route, and only with well-formed
-/// keys, which left the whole quote-stripping condition unconstrained: a mutation run found that
-/// the guard could be forced permanently true, either <c>&amp;&amp;</c> could become <c>||</c>,
-/// <c>&gt;= 2</c> could become <c>&gt; 2</c>, and both <c>"'"</c> literals could become <c>""</c> —
-/// six independent ways to break string-key parsing, none of which any test objected to.
-/// </para>
-/// <para>
-/// The cases below are chosen so that each one fails for a different one of those, which is why
-/// the malformed shapes are here rather than only the well-formed pair. A key that opens a quote
-/// without closing it is not an error: OData quotes are a transport convention, so a raw value is
-/// returned verbatim and it is the key TYPE that decides whether it parses.
-/// </para>
+/// <c>KeyParsingTests</c> reaches the parser only through a route and only with well-formed
+/// keys, so the malformed shapes are here. <c>''</c> earns its place specifically: it is the
+/// only input that separates <c>&gt;= 2</c> from <c>&gt; 2</c>. A key that opens a quote without
+/// closing it is not an error — OData quotes are transport, so a raw value is returned verbatim
+/// and the key TYPE decides whether it parses.
 /// </remarks>
 public class ODataKeyParserTests
 {
@@ -42,35 +34,15 @@ public class ODataKeyParserTests
     public void StringKey_StripsOnlyAMatchedSurroundingPair(string raw, string expected) =>
         Assert.Equal(expected, ODataKeyParser.Parse(raw, typeof(string)));
 
-    /// <summary>
-    /// The formatter and the parser are two halves of one escaping convention, so the round trip is
-    /// asserted rather than each half's spelling being restated.
-    /// </summary>
-    /// <remarks>
-    /// The unescape step is what ASP.NET Core routing does before a handler sees the segment —
-    /// <c>Format</c> percent-encodes precisely so the literal survives the URL path, and its own
-    /// remarks say the parser is handed the decoded form.
-    /// </remarks>
-    [Theory]
-    [InlineData("abc")]
-    [InlineData("it's")]
-    [InlineData("''")]
-    [InlineData("'")]
-    [InlineData("")]
-    [InlineData("a'b'c")]
-    [InlineData("a b/c?d#e")]
-    public void StringKey_RoundTripsThroughTheUrlFormatter(string key)
-    {
-        string segment = Uri.UnescapeDataString(ODataEntityKeyUrlFormatter.Format(key));
-        Assert.Equal(key, ODataKeyParser.Parse(segment, typeof(string)));
-    }
+    // The formatter/parser round trip lives in ODataEntityKeyUrlFormatterTests, which owns both
+    // halves and covers a strict superset of the string shapes.
 
     [Fact]
-    public void TimeOnlyKey_ParsesUnderInvariantCulture() =>
+    public void TimeOnlyKey_Parses() =>
         Assert.Equal(new TimeOnly(13, 45, 30), ODataKeyParser.Parse("13:45:30", typeof(TimeOnly)));
 
     [Fact]
-    public void DateOnlyKey_ParsesUnderInvariantCulture() =>
+    public void DateOnlyKey_Parses() =>
         Assert.Equal(new DateOnly(2026, 9, 12), ODataKeyParser.Parse("2026-09-12", typeof(DateOnly)));
 
     /// <summary>
@@ -97,7 +69,11 @@ public class ODataKeyParserTests
         var ex = Assert.Throws<ODataKeyFormatException>(
             () => ODataKeyParser.Parse("nope", typeof(Guid)));
 
-        Assert.Equal("Cannot parse 'nope' as Guid.", ex.Message);
+        // Contains, not Equal: BadKeyError discards this message and writes its own envelope,
+        // so the sentence is internal prose. What is contractual is that it names the value and
+        // the target type, because that is what reaches the log line.
+        Assert.Contains("nope", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Guid", ex.Message, StringComparison.Ordinal);
         Assert.NotNull(ex.InnerException);
         // Derived, so an out-of-assembly `catch (FormatException)` still works.
         Assert.IsAssignableFrom<FormatException>(ex);

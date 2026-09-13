@@ -21,25 +21,28 @@ Spike. Nothing is wired into CI and no shipping source changed. Tests WERE added
 
 ## Running it
 
-Stryker is a **local** tool (`.config/dotnet-tools.json`), not global, so the version is pinned with
-the repo:
+Stryker is a **local** tool (`.config/dotnet-tools.json`), not global, so the version pins with the
+repo. `stryker-sweep.sh` is the single entry point:
 
 ```bash
 dotnet tool restore
-dotnet stryker
+./stryker-sweep.sh          # all six shipping projects; the core run takes ~2h
+./stryker-sweep.sh core     # one project
 ```
 
-`stryker-config.json` at the repo root carries the run. The config file rejects unknown keys, so it
-cannot hold comments — the rationale for each setting is here instead.
+It generates a config file per run rather than passing CLI flags, because `coverage-analysis` is
+config-only in Stryker 5 -- and that setting is what makes this affordable at all. 146 of the 173
+files in the main suite boot a `TestServer`, so running every test per mutant is the difference
+between hours and weeks; `perTest` runs only the tests that execute the mutated statement.
 
-| Setting | Why |
-|---|---|
-| `target-framework: net10.0` | `OhData.AspNetCore` multi-targets `net8.0;net10.0`; Stryker mutates one TFM. |
-| `coverage-analysis: perTest` | Not an optimisation. 146 of the 173 files in the main suite boot a `TestServer`, so running all 3,181 tests per mutant is the difference between hours and weeks. `perTest` runs only the tests that actually execute the mutated statement. |
-| `mutate: [6 files]` | Scope. See below. |
-| `concurrency: 16` | Half of this machine's 32 cores, leaving room for the test hosts each worker spawns. |
-| `thresholds.break: 0` | The first run is a **measurement**. A threshold picked before seeing the number is a number we invented. |
-| `mutation-level: Standard` | `Advanced` adds mutations that produce more *equivalent* mutants — ones no test can kill because behaviour genuinely did not change — which pad the survivor list with noise on a first read. |
+Two settings are deliberate and would be wrong to 	idy\: `thresholds.break: 0`, because a
+threshold picked before seeing the number is a number we invented; and `mutation-level: Standard`,
+because `Advanced` adds mutations that produce more *equivalent* mutants -- ones no test can kill
+because behaviour genuinely did not change -- which pad the survivor list with noise.
+
+**Only `net10.0` is mutated.** Both shipping libraries multi-target, and `CLAUDE.md` is explicit
+that the net8.0 branches are load-bearing rather than vestigial, so nothing here is a statement
+about them.
 
 ## Why these six files
 
@@ -367,8 +370,6 @@ number would be a gate that rewards writing them.
 
 ---
 
----
-
 # The comprehensive sweep
 
 The pilot above mutated 6 files in 1 project. This is the whole product: **6 shipping projects,
@@ -531,25 +532,18 @@ contributor short* of constraining the thing its own doc comment says it protect
 back to itself.** Those tests kill mutants and are worse than no test: they fail on every
 legitimate refactor, and a team that hits enough of them starts deleting tests.
 
-This was not hypothetical here. Sixteen of the 37 survivors were `String` mutations blanking
-fragments of #498's three bind-time messages. The score-maximising move is
-`Assert.Equal(<entire paragraph>)`, which kills all sixteen. What went in instead asserts the
-**remedy sentence** — the actionable, contractual part — and deliberately leaves the explanatory
-prose free to be reworded. That is the right test and a worse score. An agent optimising for a clean
-run does not make that distinction, because nothing in the signal contains it.
+F7 above is the worked example: 5 of 19 message mutants were worth killing, the tool ranked all
+nineteen identically, and only reading them separated the contract from the commentary.
 
 **Equivalent mutants make "clean" unreachable, and chasing it does the damage.**
-`OperationSignatureValidation.cs:126` is one: the ternary's two branches yield `void` and `Task`
-respectively, and the only consumer of the result is `typeof(IResult).IsAssignableFrom(...)`, which
-answers `false` for both. No test can distinguish them, because no behaviour distinguishes them.
-Establishing that took reading three methods. An agent instructed to iterate until the run is clean
-will not stop there — it will keep writing tests, each more contorted than the last, about a
-difference that does not exist. **This is the single biggest hazard in using the tool as a gate
-rather than as a report.**
+Three of the remaining survivors are provably equivalent -- see "The 17 that remain" -- and
+establishing it for `OperationSignatureValidation.cs:126` took reading three methods. An agent told
+to iterate until the run is clean will not stop there; it will keep writing tests, each more
+contorted than the last, about a difference that does not exist. **This is the single biggest hazard
+in using the tool as a gate rather than as a report.**
 
-**The percentage is not a quantity worth gating on.** 76.22% was computed over the 162 mutants that
-ran, out of 7,735 created — the rest were filtered by scope or discarded by the CS0165 cascade. A
-threshold on that number would mostly be measuring which methods happened to survive Safe Mode.
+**The percentage is not a quantity worth gating on**, for the reason under the first run's results:
+it is computed over the mutants that RAN, and 37% of the core's never do.
 
 ### What it is actually good for
 
