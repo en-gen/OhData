@@ -20,9 +20,9 @@ GET /odata/Products/$count?$search=x  -> 501
 GET /odata/Products?$apply=…          -> 501   (was 400 from 1.0.0 through 1.6.0)
 ```
 
-Until 1.7.0 each of these returned `200` with the option parsed and thrown away - and on the
-collection routes the discarded option was echoed back into the `@odata.nextLink` the server
-generated. A `200` from `?$filter=…` reasonably tells a client that the filter was applied.
+Parsing one and throwing it away would answer `200` — and on the collection routes echo the
+discarded option back into the `@odata.nextLink` the server generates. A `200` from `?$filter=…`
+reasonably tells a client that the filter was applied.
 
 ## `501` or `400`: which, and why
 

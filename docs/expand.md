@@ -223,7 +223,7 @@ A deferred nested option is not an error: the request still returns `200`, but t
 | nested `$expand` | resolved through the delegate path, level by level |
 | multi-level `$levels` | `400` |
 
-`$filter`/`$orderby`/`$count` are **applied**, not merely permitted. Through 1.7.0 they were silently dropped — `Children($filter=…)` returned the *unfiltered* collection, which a client cannot distinguish from a filter that matched everything. They are bound with Microsoft's own `FilterBinder`/`OrderByBinder`, the same call the pushdown path makes, so a clause means the same thing whichever way the navigation is declared.
+`$filter`/`$orderby`/`$count` are **applied**, not merely permitted — dropping one silently would return the *unfiltered* collection, which a client cannot distinguish from a filter that matched everything. They are bound with Microsoft's own `FilterBinder`/`OrderByBinder`, the same call the pushdown path makes, so a clause means the same thing whichever way the navigation is declared.
 
 **One difference is worth knowing.** The pushdown path executes the clause as SQL; this path executes it in memory over what the delegate returned, so string comparison, null ordering and culture follow the CLR rather than the database's collation. That is the same divergence `Microsoft.AspNetCore.OData` has when `[EnableQuery]` runs over an in-memory source, and it is why this path binds with `HandleNullPropagation` **on** where the SQL path has it off — LINQ-to-Objects would otherwise dereference and throw where SQL evaluates `NULL` to "no match".
 
