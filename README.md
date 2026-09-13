@@ -200,232 +200,55 @@ See [docs/openapi.md](docs/openapi.md), [docs/swashbuckle.md](docs/swashbuckle.m
 [docs/nswag.md](docs/nswag.md), and [docs/versioning.md](docs/versioning.md) (multi-doc / versioned
 setup) for details.
 
+### Beyond CRUD
+
+The rest of the surface rides other profile declarations — navigation properties
+(`HasMany`/`HasOptional`/`HasRequired`), `UseETag`, `BindFunction`/`BindAction`, and `Ignore()` to
+*shrink* the wire shape — rather than the plain CRUD handlers above. Each declaration registers its
+own routes. Worked example in
+**[Beyond the basics](docs-site/getting-started.md#beyond-the-basics)**;
+full details in [docs/navigation-routing.md](docs/navigation-routing.md),
+[docs/property-access.md](docs/property-access.md),
+[docs/bound-operations.md](docs/bound-operations.md), [docs/etags.md](docs/etags.md), and
+[docs/ignoring-properties.md](docs/ignoring-properties.md).
+
 ### DTOs and EF entities
 
-`EntitySetProfile<TKey, TModel>`'s `TModel` is the **API model** — the shape on the wire and in
-`$metadata`. The quick start above uses the EF entity as its own API model because that is the
-shortest thing that works, not because the two must be the same type.
-
-**Reading** — project in the handler. `TModel` is the DTO, and EF translates the projection to SQL,
-so `$filter`/`$orderby`/`$select`/`$top` still push down:
-
-```csharp
-public class ProductProfile : EntitySetProfile<int, ProductDto>
-{
-    public ProductProfile(AppDbContext db) : base(x => x.Id)
-    {
-        FilterEnabled = OrderByEnabled = SelectEnabled = true;
-
-        GetQueryable = () => db.Products.Select(p => new ProductDto
-        {
-            Id       = p.Id,
-            Name     = p.Name,
-            Category = p.Category.Name,   // flattened; still one SQL query
-        });
-    }
-}
-```
-
-Query options are bound against `ProductDto`, so `$filter=Category eq 'Tools'` filters on the
-projected member and EF pushes it into the `JOIN`. Nothing in the framework needs to know the entity
-type exists.
-
-**`$expand` on a DTO: declare the navigation with a batch delegate.** Leave it out of the projection
-and give `HasMany` a `batchGetAll`, which loads the whole page's children in one query:
-
-```csharp
-public class OrderProfile : EntitySetProfile<int, OrderDto>
-{
-    public OrderProfile(AppDbContext db) : base(x => x.Id)
-    {
-        ExpandEnabled = true;
-
-        HasMany<LineDto>(x => x.Lines, batchGetAll: (orderIds, ct) => Task.FromResult(
-            db.Lines.Where(l => orderIds.Contains(l.OrderId))
-                .Select(l => new { l.OrderId, Dto = new LineDto { Id = l.Id, Sku = l.Sku } })
-                .ToLookup(x => x.OrderId, x => x.Dto)));
-
-        // Lines is NOT in the projection.
-        GetQueryable = () => db.Orders.Select(o => new OrderDto { Id = o.Id, Code = o.Code });
-    }
-}
-```
-
-`GET /Orders` issues one query and touches no child table. `GET /Orders?$expand=Lines` issues a
-second, batched by key — one query for the page, not one per row:
-
-```sql
-SELECT "o"."Id", "o"."Code" FROM "Orders" AS "o" ORDER BY "o"."Id" LIMIT @p
-SELECT "l"."OrderId", "l"."Id", "l"."Sku" FROM "Lines" AS "l" WHERE "l"."OrderId" IN (@k1, @k2)
-```
-
-Nested options work on it — `Lines($filter=…;$orderby=…;$top=…;$count=true)` are all applied,
-bound by the same binders as the SQL path and evaluated over the loaded children.
-
-**The alternative is to project the navigation eagerly, and it costs more than it looks:**
-
-```csharp
-GetQueryable = () => db.Orders.Select(o => new OrderDto
-    {
-        Id    = o.Id,
-        Code  = o.Code,
-        Lines = o.Lines.Select(l => new LineDto { Id = l.Id, Sku = l.Sku }).ToList(),
-    });
-```
-
-That folds into a member-init projection, so `$expand=Lines` is one query rather than two and nested
-options push all the way to SQL. But the `LEFT JOIN` is in **every** query — the framework composes
-no projection when the request carries neither `$select` nor `$expand`, so a plain `GET /Orders`
-fetches every child row across the wire and discards them at serialization. Measured, that is not
-"a JOIN is in the plan"; it is fetch-then-discard scaling with your fan-out.
-
-So: **`batchGetAll` unless the navigation is expanded on essentially every request**, where the
-single round-trip wins. A navigation in neither the projection nor a `HasMany` declaration is not
-there to fold, and `$expand` of it fails loud rather than serving an empty collection.
-
-**The trade is two-sided, and this is the other side.** A navigation served by `batchGetAll` is not
-in the queryable, so a `$filter` *through* it - `?$filter=Lines/any(l: l/Sku eq 'X')` - has nothing
-to translate against and answers `400`. The eager projection supports that filter; `batchGetAll`
-does not. Choose on which matters more for the entity set in question: paying a `LEFT JOIN` on every
-read, or giving up filtering through the navigation.
-
-**You do not have to repeat the projection.** The seam is only *"return an `IQueryable<TModel>`"*, so
-anything that produces one works. With no dependency at all, declare the projection once and reuse it:
-
-```csharp
-public sealed class OrderDto
-{
-    public static readonly Expression<Func<Order, OrderDto>> Projection = o => new OrderDto
-    {
-        Id       = o.Id,
-        Code     = o.Code,
-        Category = o.Category.Name,   // flattened; still one SQL query
-    };
-    // ...
-}
-
-GetQueryable = () => db.Orders.Select(OrderDto.Projection);
-```
-
-A mapping library can generate that expression instead — OhData neither requires nor assumes one, and
-takes no dependency on any. If you pick one, check its licence and whether it supports `IQueryable`
-projection: **Mapperly** is Apache-2.0 and source-generated, **Mapster** is MIT, and **AutoMapper**'s
-`ProjectTo` works here too but AutoMapper 16 is licensed under RPL-1.5 or a commercial agreement —
-including transitively through the MIT-licensed `AutoMapper.Extensions.ExpressionMapping` and
-`AutoMapper.AspNetCore.OData.EFCore` packages, which depend on it.
-
-If you would rather filter against the **entity** and project last — translating a DTO-shaped predicate
-into an entity-shaped one, which is what `AutoMapper.Extensions.ExpressionMapping` does — use the
-Priority-1 handler
-([`GetODataQueryable`](docs/query-options.md#getodataqueryable---full-odata-pushdown-advanced)). It
-hands your profile the whole `ODataQueryOptions` so you can translate and apply the clauses yourself.
-Two obligations come with that seam: declare what you actually honour via `HonouredQueryOptions`, and
-set `ODataQueryResult.TotalCount` if you page and support `$count`.
-
-### Beyond the basics
-
-The rest of the surface rides other profile declarations - navigation properties (`HasMany`/`HasOptional`/`HasRequired`), `UseETag`, and `BindFunction`/`BindAction` - rather than the plain CRUD handlers above. Each declaration registers its routes; the trailing comments show what you get:
-
-```csharp
-public class OrdersProfile : EntitySetProfile<int, Order>
-{
-    public OrdersProfile(AppDbContext db) : base(x => x.Id)
-    {
-        GetQueryable = () => db.Orders;
-
-        // Collection navigation. getAll gives the read routes; every parameter after it is
-        // OPTIONAL - supply only the ones whose route you want:
-        HasMany(
-            navigation: x => x.Lines,
-            getAll:    async (orderId, ct) => await db.Lines.Where(l => l.OrderId == orderId).ToListAsync(ct),
-                                          // GET /Orders({key})/Lines  (+ /Lines/$count)
-            post:      (orderId, line, ct) => /* … */,   // optional → POST /Orders({key})/Lines  (create a related entity)
-            addRef:    (orderId, lineId, ct) => /* … */, // optional → POST/PUT /Orders({key})/Lines/$ref  (link existing)
-            removeRef: (orderId, lineId, ct) => /* … */, // optional → DELETE   /Orders({key})/Lines/$ref  (unlink)
-            refTargetEntitySet: "Lines");                // optional → $ref routes emit @odata.id links
-
-        // Single-valued navigation → GET /Orders({key})/Customer.
-        HasOptional(
-            navigation: x => x.Customer,
-            get: async (orderId, ct) =>
-                await db.Orders.Where(o => o.Id == orderId).Select(o => o.Customer).FirstOrDefaultAsync(ct));
-
-        // ETag response header + If-Match concurrency on GET/PUT/PATCH/DELETE.
-        UseETag(x => x.RowVersion);
-
-        // Bound operations become routes. The entity-bound pair takes the key as its first parameter.
-        BindFunction(Discounted);       // GET  /Orders/Discounted?minOff=…
-        BindAction(Archive);            // POST /Orders/Archive
-        BindEntityFunction(Total);      // GET  /Orders({key})/Total
-        BindEntityAction(Approve);      // POST /Orders({key})/Approve
-    }
-
-    static Task<IEnumerable<Order>> Discounted(decimal minOff) => /* … */;
-    static Task Archive() => /* … */;
-    static Task<decimal> Total(int key) => /* … */;          // first parameter is the entity key
-    static Task Approve(int key, string note) => /* … */;    // first parameter is the entity key
-}
-```
-
-`HasMany(x => x.Lines)` on its own — with no handlers — registers no routes at all; it just declares the navigation for `$metadata` and `$expand`. The same optional-parameter pattern applies to `HasOptional`/`HasRequired`.
-
-See [docs/navigation-routing.md](docs/navigation-routing.md), [docs/property-access.md](docs/property-access.md), [docs/deep-insert.md](docs/deep-insert.md), and [docs/bound-operations.md](docs/bound-operations.md) for the full details behind each declaration.
-
-And to *shrink* the surface instead of growing it: `Ignore(x => x.CostBasis)` hides a property
-from `$metadata`, query options, routes, and every request/response body — without touching the
-CLR model. **One exception:** overriding `AdvancedConfigure` takes the EDM out of OhData's hands,
-which drops `Ignore()`'s EDM half — the property is back in `$metadata` and query-addressable,
-though still absent from every response body. `MapOhData()` emits a startup `Warning` naming each
-affected property and the one-line remedy. See
-[docs/ignoring-properties.md](docs/ignoring-properties.md).
+`TModel` is the **API model** — the shape on the wire and in `$metadata`. The quick start above uses
+the EF entity as its own API model because that is the shortest thing that works, not because the
+two must be the same type. Project a DTO in the handler and EF still translates
+`$filter`/`$orderby`/`$select`/`$top` to SQL; `$expand` rides a `batchGetAll` navigation delegate.
+See **[docs/dtos-and-ef-entities.md](docs/dtos-and-ef-entities.md)** for the projection recipes and
+the `batchGetAll`-versus-eager-`JOIN` trade, or
+**[docs/api-model-mapping.md](docs/api-model-mapping.md)** to declare the correspondence instead of
+writing the projection.
 
 ### Authorization
 
-OhData rides ASP.NET Core's own authentication and authorization — you keep your existing scheme, policies, roles and `IAuthorizationHandler`s, and profiles never reference an ASP.NET Core type. What OhData adds on top is a *declaration* layer: five operation categories (`Read`/`Create`/`Update`/`Delete`/`Invoke`, plus the `Writes` and `All` selectors) that map to routes, `.RequireResource()` for instance-level checks, per-operation `Invoke(name, …)` rules with their own startup validation, an `authorize` lambda on unbound operations, and a startup audit that warns about routes left anonymous in a registration that requires authorization elsewhere. Requirements are stored as plain policy/role/claim names and replayed onto the endpoints; the evaluation is entirely ASP.NET Core's.
-
-Protect a whole entity set with one call:
-
-```csharp
-RequireAuthorization("AdminOnly");   // or RequireAuthorization() / RequireRoles("Admin")
-```
-
-…or authorize **per operation** with `ConfigureAuthorization`, whose per-category lambdas mirror `AuthorizationPolicyBuilder` (requirements accumulate and AND):
+OhData rides ASP.NET Core's own authentication and authorization — you keep your existing scheme,
+policies, roles and `IAuthorizationHandler`s, and profiles never reference an ASP.NET Core type.
+What OhData adds is a *declaration* layer: `RequireAuthorization()`/`RequireRoles()` to gate a whole
+entity set, `ConfigureAuthorization(...)` to gate the five operation categories independently, and
+`.RequireResource()` for instance-level "can this user touch *this row*" checks against the loaded
+`{key}` entity. Requirements are stored as plain policy/role/claim names and replayed onto the
+endpoints; the evaluation is entirely ASP.NET Core's.
 
 ```csharp
 ConfigureAuthorization(auth => auth
-    .Read(r   => r.AllowAnonymous())                     // catalog reads are public
+    .Read(r   => r.AllowAnonymous())                           // catalog reads are public
     .Create(c => c.RequirePolicy("Editors"))
     .Update(u => u.RequireRole("Editors").RequireResource())   // Editor AND owns the row
     .Delete(d => d.RequireRole("Admin"))
     .Invoke("Approve", i => i.RequirePolicy("Approvers")));
 ```
 
-The requirements above are coarse — they answer "can this *kind* of user touch this operation." `.RequireResource()` adds the **instance-level** check "can this user touch *this row*" (owner checks, tenant isolation). OhData loads the `{key}` entity and hands it to ASP.NET Core's native resource-based authorization, so you write one standard handler:
+One scope caveat worth knowing before you rely on it: **a rule is per profile, and it does not
+compose across a navigation** — a navigation is authorized by the profile that *declares* it, never
+by the profile owning its target entity set. `MapOhData()` warns at startup for every such pair.
 
-```csharp
-// profile: an Update must come from an Editor who also owns the row
-ConfigureAuthorization(auth => auth
-    .Update(u => u.RequireRole("Editors").RequireResource()));
-
-// handler: the resource IS the loaded entity; requirement.Name selects the operation
-public sealed class OrderAuthorizationHandler
-    : AuthorizationHandler<OperationAuthorizationRequirement, Order>
-{
-    protected override Task HandleRequirementAsync(
-        AuthorizationHandlerContext ctx, OperationAuthorizationRequirement req, Order order)
-    {
-        if (req.Name == OhDataOperations.Update.Name &&
-            order.OwnerId == ctx.User.FindFirst("sub")?.Value)
-            ctx.Succeed(req);   // this Editor owns this order → allow
-        return Task.CompletedTask;
-    }
-}
-// Program.cs:  services.AddScoped<IAuthorizationHandler, OrderAuthorizationHandler>();
-```
-
-So a request to `PATCH /odata/Orders(42)` runs the role check (must be an `Editors` member) **and** loads order 42 and asks the handler whether this caller owns it — both must pass. The check covers property/navigation/`$ref` routes too (the resource is the parent entity in the path), so none of *this profile's* routes escapes *this profile's* rule. `.RequireResource("PolicyName")` evaluates a **named policy** against the entity instead. Profiles stay free of ASP.NET Core types — requirements are stored as plain policy/role/claim names.
-
-**Read that scope literally: a rule is per profile, and it does not compose across a navigation.** A navigation is authorized by the profile that *declares* it, never by the profile that owns its target entity set — so if `Customers` declares a navigation into a separately registered, more strictly gated `Tickets` set, the nav `GET`, its `/$count`, all four `$ref` routes, the navigation-`POST` and `$expand` all run under the `Customers` rule. The writes are on that list too. `MapOhData()` emits a startup `Warning` for every such pair. `Microsoft.AspNetCore.OData` behaves the same way and structurally cannot do otherwise. See [docs/authorization.md](docs/authorization.md#authorization-is-per-profile-and-does-not-compose-across-a-navigation) for the full route table, the reasoning, and the two remedies.
+See **[docs/authorization.md](docs/authorization.md)** for the resource handler, the route tables,
+the `$metadata` and unbound-operation seams, and the
+[full reasoning on that caveat](docs/authorization.md#authorization-is-per-profile-and-does-not-compose-across-a-navigation).
 
 ---
 
@@ -545,11 +368,17 @@ The full documentation — getting started, the EF Core + SQLite walkthrough, an
 
 | Topic | Guide |
 |-------|-------|
-| Query options (`$filter`, `$orderby`, `$select`, `$expand`, `$count`, `$search`) | [docs/query-options.md](docs/query-options.md) |
+| Choosing a read handler (`GetQueryable` / `GetAll` / `GetODataQueryable`) | [docs/read-handlers.md](docs/read-handlers.md) |
+| Query options (`$filter`, `$orderby`, `$select`, `$count`, `$search`) | [docs/query-options.md](docs/query-options.md) |
+| `$expand`, pushdown, and nested server-driven paging | [docs/expand.md](docs/expand.md) |
+| Complexity limits (`MaxExpandTop`, depth and breadth ceilings) | [docs/complexity-limits.md](docs/complexity-limits.md) |
+| Unsupported system query options (the `501`/`400` taxonomy) | [docs/unsupported-query-options.md](docs/unsupported-query-options.md) |
 | Navigation property routing, `$ref`, and POST-to-navigation | [docs/navigation-routing.md](docs/navigation-routing.md) |
 | Individual property access, reads/writes, and `/$value` | [docs/property-access.md](docs/property-access.md) |
 | Deep insert (nested related entities in POST), and deep update's enforced non-support | [docs/deep-insert.md](docs/deep-insert.md) |
-| Delta mapping (DTO → entity write path, dependency-free) | [docs/delta-mapping.md](docs/delta-mapping.md) |
+| DTOs and EF entities (hand-projected API models, `batchGetAll` navigations) | [docs/dtos-and-ef-entities.md](docs/dtos-and-ef-entities.md) |
+| API model / entity separation (the Mapper package) | [docs/api-model-mapping.md](docs/api-model-mapping.md) |
+| Delta mapping (DTO → entity write path) | [docs/delta-mapping.md](docs/delta-mapping.md) |
 | Error handling (`OhDataResult<T>`, the rejection factories, the error envelope) | [docs/error-handling.md](docs/error-handling.md) |
 | Open types (dynamic property bags on complex types) | [docs/open-types.md](docs/open-types.md) |
 | Polymorphic entity sets (TPH inheritance), `@odata.type`, and what differs | [docs/polymorphism.md](docs/polymorphism.md) |

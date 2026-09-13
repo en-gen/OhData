@@ -1,5 +1,4 @@
-# Observability (#200)
-
+# Observability
 OhData emits distributed-tracing spans and metrics using only the BCL
 `System.Diagnostics` primitives — an `ActivitySource` and a `Meter`, both named **`OhData`**. There is
 **no `OpenTelemetry.*` package dependency** in `EnGen.OhData.AspNetCore`; you opt in from your own

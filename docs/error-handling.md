@@ -24,7 +24,7 @@ supply. For a synchronous handler, `OhDataResult.Success(value)` is the direct r
 
 There is deliberately **no** implicit conversion from `T`: a bare `return model;` would silently
 mean "and whatever status the framework infers", and unexpressed meaning in a handler's return is
-precisely what #496 had to unpick when `null` was the only way to say "no".
+precisely the ambiguity that arises when `null` is the only way to say "no".
 
 ### The exception: `GetQueryable`
 

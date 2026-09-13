@@ -28,7 +28,7 @@ This registers **both** the operation transformer (documents the OData query par
 schema transformer (keeps generated schemas honest for profiles that use `Ignore(...)` — see
 [below](#ignored-properties-omitted-from-schemas)).
 
-To also surface OhData's per-operation authorization in the document (#219/#220), pass the opt-in
+To also surface OhData's per-operation authorization in the document, pass the opt-in
 parameters — `securitySchemeId` emits an operation-level `security` requirement plus `401`/`403`
 responses referencing a scheme your app already defines, and `authRequirements` appends a
 human-readable requirements section to each secured operation's description:
@@ -76,7 +76,7 @@ query parameters to the generated OpenAPI document driven by the entity set's ca
 
 Every field means *"this route honours this option"*. That is not a nicety: the metadata is
 attached to five route shapes, not only the paged collection GETs, so a field read as "this route
-is of kind X" produces a document that promises what the server drops. Both halves of #467 were
+is of kind X" produces a document that promises what the server drops. Both halves were
 that mistake. `$top`/`$skip` used to be added on metadata *presence* alone, which documented paging
 on `GET /{EntitySet}({key})` (answers with the whole entity, drops both) and on
 `GET /{EntitySet}/$count` (counts the whole set, drops both); and `/$count` set `CountEnabled` to
@@ -153,7 +153,7 @@ Renaming follows the whole response graph, not just the top-level entity: nested
 get their own component schema, and every one of them is renamed to the response casing. The
 transformer drives that descent itself — because renaming a property key removes the host-cased key
 the runtime uses to locate a child schema, so left to its own traversal the runtime would stop at any
-renamed complex property and leave nested-only component schemas at host casing (#260).
+renamed complex property and leave nested-only component schemas at host casing.
 
 ## Ignored properties omitted from schemas
 
