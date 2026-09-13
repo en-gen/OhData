@@ -78,7 +78,7 @@
         "src": "../docs",
         "files": [ "**/*.md" ],
         "exclude": [
-          "design/**", "superpowers/**",
+          "design/**", "superpowers/**", "spikes/**",
           "client/**", "openapi.md", "nswag.md", "swashbuckle.md", "releasing.md",
           "deployment.md"
         ],

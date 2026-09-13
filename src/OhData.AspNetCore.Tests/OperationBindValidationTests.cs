@@ -89,6 +89,9 @@ public class OperationBindValidationTests
 
         Assert.Contains("Leading", ex.Message, StringComparison.Ordinal);
         Assert.Contains("CancellationToken", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            "Move the CancellationToken to the end of the parameter list.",
+            ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -100,6 +103,12 @@ public class OperationBindValidationTests
 
         Assert.Contains("Nullable", ex.Message, StringComparison.Ordinal);
         Assert.Contains("CancellationToken", ex.Message, StringComparison.Ordinal);
+        // The REMEDY, not just the diagnosis. A message that names the problem and not the fix
+        // sends the developer back to the source to guess, which is what #468 chose a bind-time
+        // throw to avoid.
+        Assert.Contains(
+            "Declare it as 'CancellationToken' and make it the last parameter, or remove it.",
+            ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -115,6 +124,9 @@ public class OperationBindValidationTests
 
         Assert.Contains("Leading", ex.Message, StringComparison.Ordinal);
         Assert.Contains("CancellationToken", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            "Move the CancellationToken to the end of the parameter list.",
+            ex.Message, StringComparison.Ordinal);
     }
 
     /// <summary>The control: a TRAILING CancellationToken is the supported idiom and keeps working.</summary>
@@ -144,6 +156,7 @@ public class OperationBindValidationTests
 
         Assert.Contains("Wrapped", ex.Message, StringComparison.Ordinal);
         Assert.Contains("IResult", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Return the value itself instead.", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -159,6 +172,7 @@ public class OperationBindValidationTests
 
         Assert.Contains("Wrapped", ex.Message, StringComparison.Ordinal);
         Assert.Contains("IResult", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Return the value itself instead.", ex.Message, StringComparison.Ordinal);
     }
 
     // ── §4: byte[] — CSDL declared Collection(Edm.Byte), the wire served Edm.Binary ──────────
