@@ -63,8 +63,7 @@ FILTER="${1:-}"
 want swashbuckle && run swashbuckle OhData.AspNetCore.Swashbuckle.csproj src/OhData.AspNetCore.Swashbuckle.Tests/OhData.AspNetCore.Swashbuckle.Tests.csproj
 want nswag       && run nswag       OhData.AspNetCore.NSwag.csproj       src/OhData.AspNetCore.NSwag.Tests/OhData.AspNetCore.NSwag.Tests.csproj
 want openapi     && run openapi     OhData.AspNetCore.OpenApi.csproj     src/OhData.AspNetCore.OpenApi.Tests/OhData.AspNetCore.OpenApi.Tests.csproj
-# The delta half of the mapper is covered by the CORE suite's files until #675 lands, so both.
-want mapper      && run mapper      OhData.AspNetCore.Mapper.csproj      src/OhData.AspNetCore.Mapper.Tests/OhData.AspNetCore.Mapper.Tests.csproj src/OhData.AspNetCore.Tests/OhData.AspNetCore.Tests.csproj
+want mapper      && run mapper      OhData.AspNetCore.Mapper.csproj      src/OhData.AspNetCore.Mapper.Tests/OhData.AspNetCore.Mapper.Tests.csproj
 want client      && run client      OhData.Client.csproj                 src/OhData.Client.Tests/OhData.Client.Tests.csproj
 want core        && run core        OhData.AspNetCore.csproj             src/OhData.AspNetCore.Tests/OhData.AspNetCore.Tests.csproj
 
