@@ -223,11 +223,9 @@ framework does not compute.
 
 For those two families, a conditional header is ignored and the action runs.
 
-> **History, recorded so the exclusion is not reinstated.** Until 2.0.0, *entity-bound* actions
-> were excluded too, defended by the claim that an action-invocation resource *"has no
-> representation and therefore no entity tag"*, citing Protocol §11.5.4. **That phrase does not
-> appear anywhere in Part 1** — `grep -ic "no representation"` over the specification returns `0` —
-> and four clauses say the opposite:
+> **Why an entity-bound action is covered.** It is sometimes argued that an action-invocation
+> resource has no representation and therefore no entity tag. No such clause exists — that phrase
+> appears nowhere in Part 1 — and four clauses say the opposite:
 >
 > - **§11.4.1.1** (a MUST): *"If an ETag value is specified in an `If-Match` or `If-None-Match`
 >   header of a Data Modification Request **or Action Request**, the operation MUST only be invoked
@@ -239,9 +237,9 @@ For those two families, a conditional header is ignored and the action runs.
 > - **§11.5.4.1** instructs the client to send it: *"To request processing of the action only if
 >   the binding parameter value … is unmodified, the client includes the `If-Match` header."*
 >
-> Measured on the TestBench before the fix: `POST /v1/Movies(3)/Rate` with a stale `If-Match`
-> answered `200` and mutated the entity, while `PATCH /v1/Movies(3)` carrying the **same header**
-> answered `412`.
+> Without the gate, `POST /v1/Movies(3)/Rate` with a stale `If-Match` would answer `200` and mutate
+> the entity while `PATCH /v1/Movies(3)` carrying the **same header** answered `412` — one entity,
+> one header, two answers.
 
 If you need a collection-bound or unbound action to be conditional, you have to implement it
 yourself. An action handler does not receive `HttpContext` — its parameters are bound from the

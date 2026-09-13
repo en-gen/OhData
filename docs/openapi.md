@@ -76,10 +76,10 @@ query parameters to the generated OpenAPI document driven by the entity set's ca
 
 Every field means *"this route honours this option"*. That is not a nicety: the metadata is
 attached to five route shapes, not only the paged collection GETs, so a field read as "this route
-is of kind X" produces a document that promises what the server drops. Both halves were
-that mistake. `$top`/`$skip` used to be added on metadata *presence* alone, which documented paging
-on `GET /{EntitySet}({key})` (answers with the whole entity, drops both) and on
-`GET /{EntitySet}/$count` (counts the whole set, drops both); and `/$count` set `CountEnabled` to
+is of kind X" produces a document that promises what the server drops. Adding `$top`/`$skip` on
+metadata *presence* alone would be that mistake: it documents paging on
+`GET /{EntitySet}({key})` (answers with the whole entity, drops both) and on
+`GET /{EntitySet}/$count` (counts the whole set, drops both). Likewise `/$count` setting `CountEnabled` to
 mean "this route **is** a count" while the transformers read it as "this route documents the
 `$count` option", so a `$count` parameter appeared on a route that ignores it. `/$count` likewise
 advertises `$filter` only when the profile has a queryable source - on a `GetAll`-only profile that

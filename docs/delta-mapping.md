@@ -40,7 +40,7 @@ A profile may declare many pairs, and `DeltaProfile` is not generic.
 
 ## Register
 
-Delta mapping ships in **`EnGen.OhData.AspNetCore.Mapper`** as of 2.0.0:
+Delta mapping ships in **`EnGen.OhData.AspNetCore.Mapper`**:
 
 ```
 dotnet add package EnGen.OhData.AspNetCore.Mapper

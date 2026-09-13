@@ -297,10 +297,9 @@ Three things this does **not** change:
   type**. The check runs before any of this, so a request to link an existing entity keeps its
   explicit non-support answer rather than being swallowed as an annotation. Deep insert by reference
   is unimplemented on every verb, not malformed on any of them, which is why it is `501` and not the
-  `400` the identifier grammar used to give it incidentally. (It used to sit *below* the open-type
-  gate, so on a registration with no open complex type it never ran at all and the annotation was
-  silently discarded under a `200`/`201` — see
-  [#456](https://github.com/en-gen/OhData/issues/456).)
+  `400` the identifier grammar would give it incidentally. The check sits *above* the open-type
+  gate deliberately: below it, a registration with no open complex type would never run it at all
+  and the annotation would be silently discarded under a `200`/`201`.
 - An `@` key **one level below an accepted dynamic key** is still `400`. Down there the contract has
   run out: the whole subtree is opaque data that will be stored and echoed verbatim, so there is no
   declared-versus-annotation distinction to draw and an unaddressable key is a stored fault.
@@ -535,11 +534,10 @@ OhData follows that library closely elsewhere — the declared-name collision ab
 directly on the check that sits three lines below this one — so diverging here is recorded rather
 than accidental. Three reasons:
 
-1. **Matching the skip would mean resurrecting deleted code.** OhData's container getter no longer
-   produces a filtered copy; it inspects the bag and hands back the *same reference*, which is
-   precisely what removed the corner where a pre-seeded container silently lost every write. Dropping
-   a key requires substituting a filtered dictionary — the `TryCreateEmptyLike` / `DropShadowedKeys`
-   machinery that was deliberately deleted. Bringing it back to produce a **silent** drop is the
+1. **Matching the skip would mean reintroducing a filtered copy.** OhData's container getter
+   inspects the bag and hands back the *same reference* rather than producing a filtered copy, which
+   is what keeps a pre-seeded container from silently losing every write. Dropping a key requires
+   substituting a filtered dictionary, and adding that back to produce a **silent** drop is the
    wrong trade.
 2. **It is consistent with the collision case.** Both conditions have the same cause — server-side
    code put a key in the container that cannot be a valid dynamic property name — and the same fix.
@@ -547,11 +545,11 @@ than accidental. Three reasons:
 
 ### The line is the full grammar, and what that costs
 
-This check used to be `string.IsNullOrWhiteSpace` — "not a name at all" — on the grounds that
+The narrow alternative is `string.IsNullOrWhiteSpace` — "not a name at all" — on the grounds that
 `"has space"` and `"@odata.type"` *are* names and rejecting them costs rune enumeration plus a
 Unicode-category lookup per key per instance, on **every serialize**, to close a hole the write path
 already closes (`"has space"` with a `400`, `"@odata.type"` by [removing
-it](#control-information)). It is now the full `odataIdentifier` grammar, identical to the one the
+it](#control-information)). The check is instead the full `odataIdentifier` grammar, identical to the one the
 write path applies, so the container's contents **are** fully validated in both directions.
 
 How it is made affordable:
@@ -593,9 +591,8 @@ unaffected — none of this code runs for it.
 An earlier in-situ figure of ~26% (~56 ns/key) came from a stopwatch harness and is **refuted** by
 the run above; the benchmark that settled it is `OpenTypeKeyValidationBenchmarks`.
 
-`char.IsWhiteSpace` is no longer involved, but nothing narrowed: NBSP (U+00A0) and EM SPACE (U+2003)
-are rejected by the grammar as surely as they were by the whitespace test, since neither is in any
-permitted category.
+The grammar subsumes a whitespace test rather than narrowing it: NBSP (U+00A0) and EM SPACE
+(U+2003) are rejected because neither is in any permitted category.
 
 Like the collision, this cannot be checked at startup: the keys are dynamic and the condition depends
 on the runtime instance rather than on the type.

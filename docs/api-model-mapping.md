@@ -303,7 +303,7 @@ HonouredQueryOptions |= OhDataSystemQueryOption.Search;
 This package covers both halves of the model/entity boundary, but they are separate features that do
 not know about each other. The correspondences above are the **read** half. For the **write** half,
 `Post`, `Put` and `Patch` receive the model and [delta mapping](delta-mapping.md) — also in this
-package as of 2.0.0 — turns a `Delta<TModel>` into a `Delta<TEntity>` you apply.
+package — turns a `Delta<TModel>` into a `Delta<TEntity>` you apply.
 
 A `ModelMap` is not a `DeltaProfile`: declare each separately. Only Direct and Rename bindings are
 invertible, so a model whose writable members are all one of those has a mechanical write map;

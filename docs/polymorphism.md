@@ -64,7 +64,7 @@ single-entity read and on expanded navigation values, not only on collection row
 For a flat model, an `$expand` is folded into a **member-init projection** over the model type — one
 `Select` that EF translates into a single query. A member-init can construct nothing but the type it
 names, so on a hierarchy every row would materialize as the base and the derived properties would
-vanish. Measured before this was fixed: `GET /Things` emitted
+vanish. Were the projection composed anyway, `GET /Things` would emit
 `SELECT Id, Discriminator, Name, Extra, Rank` while `?$expand=Children` emitted
 `SELECT t0.Id, t0.Name, c.Id, c.BaseId, c.Body` — the discriminator not even selected, so EF could not
 have materialized the derived type even if the projection had wanted to.

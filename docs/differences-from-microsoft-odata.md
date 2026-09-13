@@ -96,7 +96,8 @@ header value OhData gave you. See [etags.md](etags.md#weak-validators-are-reject
 
 An invalid construct otherwise reaches `$metadata` and breaks only the consumers that validate —
 typically client code generators, i.e. someone else's build, long after the change that caused it.
-When this was first wired in it caught a real violation in four of OhData's own fixtures.
+The check is not theoretical: it catches violations in fixtures that otherwise build and serve
+cleanly.
 
 ### 6. `$expand` continuation for a key that matches no entity
 
@@ -132,8 +133,8 @@ type — *"If a media mapping was found, use that and override the value specifi
 
 `Microsoft.OData.Client` depends on this: it translates `LongCount()` by appending `/$count` to the
 query string it has already built and strips nothing, so `q.OrderBy(…).LongCount()`,
-`q.Take(n).LongCount()` and `q.Skip(n).LongCount()` all send options along. OhData reversed its own
-ruling in 2.0.0 and now ignores both `Accept` and `$format` on that segment. Every shape above is
+`q.Take(n).LongCount()` and `q.Skip(n).LongCount()` all send options along. OhData ignores both
+`Accept` and `$format` on that segment. Every shape above is
 pinned end-to-end against the real client in `OhData.MicrosoftODataClient.Tests`.
 
 ### Authorization does not compose across a navigation
@@ -159,9 +160,8 @@ is rejected. Microsoft lands in the same place —
 reverse pass (`ODataResourceDeserializer.cs:484-492`).
 
 §11.4.2's only MUST-fail concerns *"property values specified in the request"*, and §11.4.3 — PUT-only
-— prescribes defaulting rather than refusal. OhData shipped a stricter rule in 1.x and **withdrew**
-it in 2.0.0, because it made the wire answer depend on a CLR initializer that `$metadata` does not
-describe.
+— prescribes defaulting rather than refusal. OhData does not refuse an omitted property: doing so
+would make the wire answer depend on a CLR initializer that `$metadata` does not describe.
 
 ### An unknown property in a request body is ignored, not refused
 

@@ -93,14 +93,12 @@ a body key to a navigation uses the same resolution the binder used — case-ins
 `[JsonPropertyName]`-aware — and reads the **root** object's members only, so a same-named member of
 a nested value does not count. See [#506](https://github.com/en-gen/OhData/issues/506).
 
-> **Changed in 1.6.0 (breaking).** Through 1.5.0 the collection `POST` nulled **every** navigation on
-> the model regardless of what the body contained, and `PUT` did the same for the life of
-> [#504](https://github.com/en-gen/OhData/pull/504) (merged, never released). A handler that
-> diff-synced a collection navigation against the loaded entity therefore saw `null` where the
-> model's constructor had put an empty list — an `NullReferenceException` in `.Count`, or a "null
-> means clear the relationship" misread. If a `Post` handler relied on "the framework always hands me
-> `null` navigations", it now receives whatever the model's own constructor put there for navigations
-> the client did not send. Behaviour for a body that **does** carry a nested graph is unchanged.
+> **A handler receives whatever the model's own constructor put there** for navigations the client
+> did not send — not `null`. Nulling every navigation regardless of the body is what breaks a
+> handler that diff-syncs a collection navigation against the loaded entity: it sees `null` where
+> the constructor had put an empty list, which is a `NullReferenceException` in `.Count` or a "null
+> means clear the relationship" misread. Behaviour for a body that **does** carry a nested graph is
+> unchanged either way.
 
 `PATCH` is deliberately *not* "bound and then nulled". `Delta<T>` is a change **set**: a navigation
 nulled inside it would still be named by `GetChangedPropertyNames()` and still written by
@@ -198,16 +196,16 @@ bounded during read (its overflow is mapped to the same `413`).
 `EntitySetDefaults.MaxRequestBodyBytes` defaults to `EntitySetDefaults.DefaultMaxRequestBodyBytes`
 — **30,000,000 bytes**, which is Kestrel's own default `MaxRequestBodySize`.
 
-It used to default to `null`, meaning *no OhData-level limit*. That reads as harmless only while the
-host's own limit is in place: neither half of the enforcement above ran, so on a host that raised or
-disabled `MaxRequestBodySize` — routine for an app that also accepts uploads — nothing anywhere
-bounded a write body OhData materialises in full before deserializing it.
+A `null` default would mean *no OhData-level limit*, which reads as harmless only while the host's
+own limit is in place: neither half of the enforcement above would run, so on a host that raised or
+disabled `MaxRequestBodySize` — routine for an app that also accepts uploads — nothing would bound a
+write body OhData materialises in full before deserializing it.
 
-Kestrel's number was chosen deliberately rather than invented. On a **default** host it changes
-nothing observable except which layer reports the rejection (OhData's `413` envelope instead of
-Kestrel's), because the same byte count was already refused one layer down. The behaviour change
-lands only on a host that raised or removed its own limit — precisely the configuration that had no
-ceiling at all.
+Kestrel's number is deliberate rather than invented. On a **default** host the only observable
+difference is which layer reports the rejection — OhData's `413` envelope instead of Kestrel's —
+because the same byte count is refused one layer down either way. The ceiling only bites on a host
+that raised or removed its own limit, which is precisely the configuration that would otherwise have
+none.
 
 To restore the old behaviour, clear it server-wide:
 
@@ -255,9 +253,9 @@ Deep update — a nested graph in a `PUT` or `PATCH` body, OData 4.01 §11.4.3.1
 named feature** from deep insert, an Advanced-conformance item, and it is not implemented. OhData
 does not create, update or delete related entities from an update body under any setting.
 
-Through 1.5.0 that was a documented statement rather than an enforced one: `AllowDeepInsert`
-applied on the collection `POST` alone, so System.Text.Json bound the nested values anyway and
-`PUT` forwarded them to the handler while `PATCH` bound them into the `Delta<TModel>`. A handler
+The enforcement is real, not merely documented: were the flag to apply on the collection `POST`
+alone, System.Text.Json would bind the nested values anyway and `PUT` would forward them to the
+handler while `PATCH` bound them into the `Delta<TModel>`. A handler
 doing `db.Update(model); SaveChanges();` on a `PUT` it never expected to carry a graph could
 therefore persist part of one — the exact hazard the flag exists to prevent, on the two verbs it
 did not cover. [#457](https://github.com/en-gen/OhData/issues/457) closed that: the same strip now
@@ -285,16 +283,16 @@ missing"*.
 **An omitted property is never a violation** ([#544](https://github.com/en-gen/OhData/issues/544) /
 [#545](https://github.com/en-gen/OhData/issues/545)), on any verb, whatever the CLR declaration
 would leave behind. Three properties that `$metadata` describes *identically* as
-`Nullable="false"` used to answer differently on an omission:
+`Nullable="false"` are answered identically on an omission:
 
 ```
-POST {}   against   public string Title  = "";       201  ->  201
-POST {}   against   public string Title  = null!;    400  ->  201
-POST {}   against   public int    Year;              201  ->  201
+POST {}   against   public string Title  = "";       201
+POST {}   against   public string Title  = null!;    201
+POST {}   against   public int    Year;              201
 ```
 
-…so the wire answer depended on a CLR initializer and on value-versus-reference, neither of which
-appears in the published contract. All three now accept the omission, and all three still answer
+The alternative would make the wire answer depend on a CLR initializer and on
+value-versus-reference, neither of which appears in the published contract. All three still answer
 `400` for an explicit `{"Title": null}` (the last one by way of the deserializer, since `int`
 cannot hold `null`). Part 1 backs this: §11.4.2's only MUST-fail is about *"all property values
 **specified in the request**"*, and §11.4.3 — the one clause that speaks to a *missing* property at

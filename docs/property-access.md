@@ -104,7 +104,7 @@ and the immutable-key stubs.
 | Condition | Status |
 |---|---|
 | Entity not found | `404 Not Found` |
-| Property value is `null` | `204 No Content` (§11.2.3.1 — *"A `$value` request for a property that is null results in a 204 No Content response"*). Answered `404` through 1.7.0; corrected in 2.0.0 by [#369](https://github.com/en-gen/OhData/issues/369), which also made it agree with the sibling `/{Property}` route |
+| Property value is `null` | `204 No Content` (§11.2.3.1 — *"A `$value` request for a property that is null results in a 204 No Content response"*). Agrees with the sibling `/{Property}` route |
 | Property is a complex type | `400 Bad Request` (no raw representation — see below) |
 | Otherwise | `200 OK`, raw body |
 
@@ -245,8 +245,7 @@ strategy or a bare, envelope-less `405`. Use `PUT` to replace the whole value in
 `501` and not `400` ([#645](https://github.com/en-gen/OhData/issues/645)): no setting on
 `EntitySetProfile` or `EntitySetDefaults` enables a complex merge, so no configuration makes this
 request succeed — which is exactly the framework's `501`-vs-`400` test ("can't", not "won't") and
-§9.3.1's MUST. It answered `400 NotSupported` from 1.0.0 through 1.7.0, alone among the permanent
-non-goals; `@odata.bind` has always answered `501`.
+§9.3.1's MUST. `@odata.bind`, the other permanent non-goal, answers `501` for the same reason.
 
 `GET /{EntitySet}({key})/{ComplexProperty}/$value` keeps its **`400`**, and that is a different
 condition rather than an inconsistency: §11.2.3.1 defines `/$value` for *primitive* properties only,
