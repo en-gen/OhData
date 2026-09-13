@@ -129,7 +129,7 @@ jobs:
       - name: Stale-API scan (docs must not reference removed/renamed API)
         run: |
           if hits=$(grep -rnE --include='*.md' \
-                --exclude-dir=design --exclude-dir=superpowers --exclude-dir=_site \
+                --exclude-dir=design --exclude-dir=superpowers --exclude-dir=spikes --exclude-dir=_site \
                 -e '\.AddProfile[<(]' \
                 -e 'OhData\.Abstractions' \
                 -e 'using OhData\.AspNetCore;' \

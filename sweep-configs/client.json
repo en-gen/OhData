@@ -1,0 +1,14 @@
+{
+  "stryker-config": {
+    "project": "OhData.Client.csproj",
+    "solution": "src/OhData.sln",
+    "target-framework": "net10.0",
+    "test-projects": ["src/OhData.Client.Tests/OhData.Client.Tests.csproj"],
+    "coverage-analysis": "perTest",
+    "concurrency": 16,
+    "thresholds": { "high": 80, "low": 60, "break": 0 },
+    "reporters": ["json", "cleartext", "progress"],
+    "report-file-name": "sweep-client",
+    "mutation-level": "Standard"
+  }
+}
