@@ -19,21 +19,10 @@ Try it live — fire real `$filter`/`$orderby`/`$expand` queries (writes too) at
 
 Or run it locally: the clone-and-run [EF Core + SQLite sample](samples/OhData.Sample.EfCoreSqlite/) puts a real relational database behind OhData and logs the SQL, so you can watch `$filter`/`$orderby`/`$top` become `WHERE`/`ORDER BY`/`LIMIT`.
 
-## Getting Started
-
-Install the server package:
-
-```
-dotnet add package EnGen.OhData.AspNetCore
-```
-
-Install the client package:
-
-```
-dotnet add package EnGen.OhData.Client
-```
-
 ## Packages
+
+Install with `dotnet add package <id>` — the server framework and the typed client are independent,
+and every companion is optional.
 
 | Package | What it does |
 |---------|--------------|
