@@ -21,9 +21,6 @@ Or run it locally: the clone-and-run [EF Core + SQLite sample](samples/OhData.Sa
 
 ## Packages
 
-Install with `dotnet add package <id>` — the server framework and the typed client are independent,
-and every companion is optional.
-
 | Package | What it does |
 |---------|--------------|
 | [![EnGen.OhData.AspNetCore](https://img.shields.io/nuget/v/EnGen.OhData.AspNetCore?label=EnGen.OhData.AspNetCore)](https://www.nuget.org/packages/EnGen.OhData.AspNetCore) | The server framework. |
