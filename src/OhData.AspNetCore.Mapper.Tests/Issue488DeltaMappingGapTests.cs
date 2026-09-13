@@ -6,7 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using OhData;
 using Xunit;
 
-namespace OhData.AspNetCore.Tests;
+namespace OhData.AspNetCore.Mapper.Tests;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // #488 — further gaps where DeltaMappingCompiler validated against a model of

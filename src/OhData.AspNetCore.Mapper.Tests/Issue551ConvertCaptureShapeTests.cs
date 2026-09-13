@@ -2,7 +2,7 @@ using System;
 using OhData;
 using Xunit;
 
-namespace OhData.AspNetCore.Tests;
+namespace OhData.AspNetCore.Mapper.Tests;
 
 public sealed class C551Model { public int Id { get; set; } public string Size { get; set; } = ""; }
 public sealed class C551Entity { public int Id { get; set; } public int Size { get; set; } }

@@ -6,9 +6,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using OhData;
+using OhData.AspNetCore.Tests;
 using Xunit;
 
-namespace OhData.AspNetCore.Tests;
+namespace OhData.AspNetCore.Mapper.Tests;
 
 /// <summary>In-memory store of domain entities for the delta-mapping e2e profile.</summary>
 public sealed class DmStore

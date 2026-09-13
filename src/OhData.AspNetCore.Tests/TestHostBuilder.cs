@@ -1,5 +1,8 @@
+using System;
+using System.Net.Http;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -10,6 +13,9 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OhData;
 
+// Also compiled into OhData.AspNetCore.Mapper.Tests as a linked <Compile> item (#675). That project
+// does NOT enable ImplicitUsings, so every using here must stay explicit, and nothing may be added
+// that the mapper test project does not reference (it has no EF Core InMemory, for one).
 namespace OhData.AspNetCore.Tests;
 
 /// <summary>
