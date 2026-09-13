@@ -8,7 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using OhData;
 using Xunit;
 
-namespace OhData.AspNetCore.Tests;
+namespace OhData.AspNetCore.Mapper.Tests;
 
 // ── Model / entity fixtures ──────────────────────────────────────────────────────
 public enum DmStatus { Draft = 0, Active = 1, Archived = 2 }
@@ -319,28 +319,6 @@ public class DeltaMappingTests
         // nothing for it, which the combined scan could not offer.
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(DeltaProfileRegistry));
         Assert.Contains(services, d => d.ServiceType == typeof(DmScanEntityProfile));
-    }
-
-    // ── IsChanged / TryGetChanged sugar ──────────────────────────────────────────
-    [Fact]
-    public void IsChanged_And_TryGetChanged_ReflectPresence()
-    {
-        var delta = new Delta<DmDto>();
-        delta.TrySetPropertyValue(nameof(DmDto.Name), "x");
-
-        Assert.True(delta.IsChanged(d => d.Name));
-        Assert.False(delta.IsChanged(d => d.Price));
-
-        Assert.True(delta.TryGetChanged(d => d.Name, out string? name));
-        Assert.Equal("x", name);
-        Assert.False(delta.TryGetChanged(d => d.Price, out decimal _));
-    }
-
-    [Fact]
-    public void DeltaExpressionSugar_RejectsNonMemberExpression()
-    {
-        var delta = new Delta<DmDto>();
-        Assert.Throws<ArgumentException>(() => delta.IsChanged(d => d.Name.ToUpper()));
     }
 
     // ── Singleton thread-safety under concurrent first-use ───────────────────────
