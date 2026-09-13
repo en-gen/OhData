@@ -164,7 +164,7 @@ declaration; write `static v => ...` or a static method. Delta mapping is depend
 and a `DeltaProfile` constructor should not need injected services at all.
 
 **The refusal is broader than "captures a dependency", and two of the shapes it catches are ones you
-would not expect** (#551). A delegate is opaque, so *"captures nothing"* is the only property that
+would not expect**. A delegate is opaque, so *"captures nothing"* is the only property that
 can be checked from outside it — and C# compiles a method group's receiver into the delegate exactly
 as it compiles a captured local:
 

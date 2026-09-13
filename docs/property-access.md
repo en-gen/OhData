@@ -93,7 +93,7 @@ and the immutable-key stubs.
 | Condition | Status |
 |---|---|
 | Entity not found | `404 Not Found` |
-| Property value is `null` | `204 No Content` (§11.2.3 — *"If the property is single-valued and has the null value, the service responds with 204 No Content"*; the citation read §11.2.6 until #369, which is *Requesting Related Entities* and governs navigations, not this route) |
+| Property value is `null` | `204 No Content` (§11.2.3 — *"If the property is single-valued and has the null value, the service responds with 204 No Content"*) |
 | Otherwise | `200 OK` with the envelope above |
 | Unknown property name | `404 Not Found` (no route registered for that segment) |
 
