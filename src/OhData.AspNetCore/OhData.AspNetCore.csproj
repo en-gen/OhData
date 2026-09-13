@@ -54,6 +54,11 @@
 		  kind predicate, and the IOhDataStartupValidated marker MapOhData resolves.
 		-->
 		<InternalsVisibleTo Include="OhData.AspNetCore.Mapper" />
+		<!--
+		  #675: the delta-mapping tests moved into the Mapper package's own test project with the
+		  code they cover, and they reach ProfileScanner, which is internal.
+		-->
+		<InternalsVisibleTo Include="OhData.AspNetCore.Mapper.Tests" />
 		<InternalsVisibleTo Include="OhData.AspNetCore.OpenApi" />
 		<InternalsVisibleTo Include="OhData.AspNetCore.NSwag" />
 		<InternalsVisibleTo Include="OhData.AspNetCore.Swashbuckle" />

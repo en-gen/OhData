@@ -29,6 +29,16 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!--
+		  #675: the delta-mapping tests moved here with the code they cover, and two of them need a
+		  generic in-process host. TestHostBuilder is 91 lines with no EF dependency, and every
+		  package it uses is already referenced above, so it is LINKED rather than copied: one
+		  implementation, two consumers, which is the rule the framework itself is held to.
+		-->
+		<Compile Include="..\OhData.AspNetCore.Tests\TestHostBuilder.cs" Link="TestHostBuilder.cs" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<ProjectReference Include="..\OhData.AspNetCore\OhData.AspNetCore.csproj" />
 		<ProjectReference Include="..\OhData.AspNetCore.Mapper\OhData.AspNetCore.Mapper.csproj" />
 	</ItemGroup>

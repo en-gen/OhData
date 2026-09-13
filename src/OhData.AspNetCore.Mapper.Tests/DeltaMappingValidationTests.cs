@@ -7,9 +7,10 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.OData.Deltas;
 using Microsoft.Extensions.DependencyInjection;
 using OhData;
+using OhData.AspNetCore.Tests;
 using Xunit;
 
-namespace OhData.AspNetCore.Tests;
+namespace OhData.AspNetCore.Mapper.Tests;
 
 // ── Reference-assignable (inheritance) automatic mapping ─────────────────────────
 public class DmBasePayload { public string Tag { get; set; } = ""; }
