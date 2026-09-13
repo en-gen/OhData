@@ -234,17 +234,97 @@ public class ETagValueFormatterTests
     }
 
     /// <summary>Nested types stay distinct even though <c>Type.Name</c> drops the declaring
-    /// type.</summary>
+    /// type, and the chain reads OUTWARD-IN.</summary>
+    /// <remarks>
+    /// The distinctness half alone does not constrain the ordering: dropping the
+    /// <c>segments.Reverse()</c> yields <c>Shared+OuterA+...</c>, which is still stable and still
+    /// distinct from its sibling, so a mutation run killed nothing here. The chain is asserted
+    /// literally because the produced string IS the hash discriminator.
+    /// </remarks>
     [Fact]
-    public void StableTypeName_KeepsNestedTypesDistinct()
+    public void StableTypeName_KeepsNestedTypesDistinct_AndNamesThemOutwardIn()
     {
-        Assert.NotEqual(
-            ETagValueFormatter.StableTypeName(typeof(OuterA.Shared)),
+        Assert.Equal(
+            "OhData.AspNetCore.Tests.ETagValueFormatterTests+OuterA+Shared",
+            ETagValueFormatter.StableTypeName(typeof(OuterA.Shared)));
+        Assert.Equal(
+            "OhData.AspNetCore.Tests.ETagValueFormatterTests+OuterB+Shared",
             ETagValueFormatter.StableTypeName(typeof(OuterB.Shared)));
+    }
+
+    /// <summary>
+    /// A type in the global namespace has a <see langword="null"/> <c>Namespace</c>, and the name
+    /// is returned bare rather than with a leading separator.
+    /// </summary>
+    [Fact]
+    public void StableTypeName_OmitsTheSeparator_ForAGlobalNamespaceType()
+    {
+        Assert.Null(typeof(EtagGlobalNamespaceKey).Namespace);
+        Assert.Equal("EtagGlobalNamespaceKey", ETagValueFormatter.StableTypeName(typeof(EtagGlobalNamespaceKey)));
     }
 
     private static class OuterA { internal sealed class Shared { } }
     private static class OuterB { internal sealed class Shared { } }
+
+    // ── Append: the self-delimiting hash encoding ──────────────────────────────────
+
+    private static byte[] Appended(params object?[] values)
+    {
+        using var buffer = new System.IO.MemoryStream();
+        foreach (object? v in values) ETagValueFormatter.Append(buffer, v);
+        return buffer.ToArray();
+    }
+
+    /// <summary>
+    /// A null contributes a tag byte, and that byte is the whole of its contribution.
+    /// </summary>
+    /// <remarks>
+    /// Removing it would make a null contribute NOTHING, so for a profile with more than one
+    /// selector (<c>ETagSelectors</c> is a list) <c>[null, X]</c> and <c>[X]</c> would serialize
+    /// identically and hash to one ETag — two entities sharing an entity tag, which makes
+    /// <c>If-Match</c> a silent no-op between them. That is #351's failure mode reached from a
+    /// different direction, and a mutation run found nothing objecting to it: the whole encoding
+    /// had no direct coverage.
+    /// </remarks>
+    [Fact]
+    public void Append_TagsNull_SoAnAbsentValueIsNotTheSameAsNoValue()
+    {
+        Assert.Equal(new byte[] { ETagValueFormatter.TagNull }, Appended((object?)null));
+
+        Assert.NotEqual(Appended(null, "x"), Appended("x"));
+        Assert.NotEqual(Appended("x", null), Appended("x"));
+        // Position matters too, or a two-selector profile could transpose them.
+        Assert.NotEqual(Appended(null, "x"), Appended("x", null));
+    }
+
+    /// <summary>
+    /// A <c>default</c> <see cref="System.Collections.Immutable.ImmutableArray{T}"/> is the "no
+    /// value" state, never an empty buffer, so it tags as null rather than as a zero-length frame.
+    /// </summary>
+    [Fact]
+    public void Append_TreatsADefaultImmutableArrayAsNull_NotAsAnEmptyBuffer()
+    {
+        byte[] fromDefault = Appended(default(System.Collections.Immutable.ImmutableArray<byte>));
+
+        Assert.Equal(new byte[] { ETagValueFormatter.TagNull }, fromDefault);
+        Assert.NotEqual(fromDefault, Appended(System.Collections.Immutable.ImmutableArray<byte>.Empty));
+        Assert.Equal(fromDefault, Appended((object?)null));
+    }
+
+    /// <summary>
+    /// The framing is self-delimiting: two values cannot be concatenated into a third value's
+    /// encoding.
+    /// </summary>
+    [Fact]
+    public void Append_FramesValues_SoConcatenationIsUnambiguous()
+    {
+        Assert.NotEqual(Appended("ab", "c"), Appended("a", "bc"));
+        Assert.NotEqual(Appended("abc"), Appended("ab", "c"));
+        // A binary buffer and the string whose UTF-8 encoding is those same two bytes. The TAG
+        // is what separates them, so the frame contents alone are not relied on. Written as
+        // escapes: raw control characters in source are invisible in a diff and in review.
+        Assert.NotEqual(Appended(new byte[] { 1, 2 }), Appended("\u0001\u0002"));
+    }
 
     // ── Selector-type allowlist ────────────────────────────────────────────────────
 

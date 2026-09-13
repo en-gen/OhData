@@ -1,0 +1,40 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stryker-mutator/stryker-net/master/src/Stryker.Core/Stryker.Core/Schemas/stryker-config.json",
+  "stryker-config": {
+    "project": "OhData.AspNetCore.csproj",
+    "solution": "src/OhData.sln",
+    "target-framework": "net10.0",
+    "test-projects": [
+      "src/OhData.AspNetCore.Tests/OhData.AspNetCore.Tests.csproj"
+    ],
+    "mutate": [
+      "CapturedState.cs",
+      "**/CapturedState.cs",
+      "ODataKeyParser.cs",
+      "**/ODataKeyParser.cs",
+      "ETagValueFormatter.cs",
+      "**/ETagValueFormatter.cs",
+      "InheritedTypeConfig.cs",
+      "**/InheritedTypeConfig.cs",
+      "OperationSignatureValidation.cs",
+      "**/OperationSignatureValidation.cs",
+      "EdmClrTypeMap.cs",
+      "**/EdmClrTypeMap.cs"
+    ],
+    "coverage-analysis": "perTest",
+    "concurrency": 16,
+    "thresholds": {
+      "high": 80,
+      "low": 60,
+      "break": 0
+    },
+    "reporters": [
+      "html",
+      "json",
+      "progress",
+      "cleartext"
+    ],
+    "report-file-name": "stryker-pilot",
+    "mutation-level": "Standard"
+  }
+}

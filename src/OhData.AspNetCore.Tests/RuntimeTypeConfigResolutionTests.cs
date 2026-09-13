@@ -809,6 +809,47 @@ public sealed class RuntimeTypeConfigResolutionTests
     }
 
     /// <summary>
+    /// Three contributors, because two cannot distinguish a union from a reset.
+    /// </summary>
+    /// <remarks>
+    /// <c>Walk</c> keeps <c>first</c> by reference and only allocates on the SECOND contributor
+    /// (<c>union ??= new HashSet&lt;string&gt;(first, ...)</c>). With <c>=</c> in place of
+    /// <c>??=</c> the accumulator is rebuilt from <c>first</c> every time, which is
+    /// indistinguishable from correct for one or two levels and drops everything in between from
+    /// the third on. A mutation run found exactly that: the sibling two-level test above passed
+    /// with the reuse removed. The MIDDLE level's names are what vanish, and they are withheld
+    /// names -- a disclosure boundary, so the failure mode is an <c>Ignore()</c>d property served
+    /// on some rows and not others, which is #462 one inheritance level further down.
+    /// </remarks>
+    [Fact]
+    public void WithheldNames_UnionAcrossThreeLevels_KeepsTheMiddleLevel()
+    {
+        var withheld = new InheritedNameSets(
+            new Dictionary<Type, IReadOnlySet<string>>
+            {
+                [typeof(RtcBaseBag)] = new HashSet<string>(new[] { "Region" }, StringComparer.Ordinal),
+                [typeof(RtcDerivedBag)] = new HashSet<string>(new[] { "Channel" }, StringComparer.Ordinal),
+                [typeof(RtcLeafBag)] = new HashSet<string>(new[] { "Segment" }, StringComparer.Ordinal),
+            },
+            StringComparer.Ordinal);
+
+        IReadOnlySet<string> resolved = withheld.Resolve(typeof(RtcLeafBag))!;
+
+        Assert.Equal(
+            new[] { "Channel", "Region", "Segment" },
+            resolved.OrderBy(n => n, StringComparer.Ordinal).ToArray());
+
+        // Each ancestor still resolves to its own contribution upward only -- the walk never
+        // descends, so a leaf declaration cannot leak into a base's answer.
+        Assert.Equal(
+            new[] { "Channel", "Region" },
+            withheld.Resolve(typeof(RtcDerivedBag))!.OrderBy(n => n, StringComparer.Ordinal).ToArray());
+        Assert.Equal(
+            new[] { "Region" },
+            withheld.Resolve(typeof(RtcBaseBag))!.OrderBy(n => n, StringComparer.Ordinal).ToArray());
+    }
+
+    /// <summary>
     /// The single-contributor case must hand back the very set it was given, never a copy: each set
     /// carries the BINDER's comparer (#398 review HIGH-1) and re-wrapping it on a per-request lookup
     /// would both re-allocate and risk substituting the wrong comparer.
@@ -889,4 +930,14 @@ public class RtcBaseBag
 public class RtcDerivedBag : RtcBaseBag
 {
     public string? Channel { get; set; }
+}
+
+/// <summary>
+/// A THIRD level. Two contributors cannot tell a correct union from one that is rebuilt on every
+/// contributor -- both answer the same thing -- so the accumulator's reuse is only observable from
+/// here down. See <c>WithheldNames_UnionAcrossThreeLevels_KeepsTheMiddleLevel</c>.
+/// </summary>
+public class RtcLeafBag : RtcDerivedBag
+{
+    public string? Segment { get; set; }
 }
