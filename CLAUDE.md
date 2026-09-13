@@ -330,7 +330,6 @@ Eighteen projects, all in `src/OhData.sln`. The `Target` column is the literal
 | `OhData.Client.Tests` | net10.0 | xUnit tests for OhData.Client |
 | `OhData.MicrosoftODataClient.Tests` | net10.0 | Compatibility tests against Microsoft.OData.Client |
 | `OhData.Client.Benchmarks` | net10.0 | BenchmarkDotNet project for client library performance |
-| `OhData.AspNetCore.Mapper.Tests` | #675: the delta-mapping tests moved into the mapper package's own test project, with the code #665 moved. They reach `ProfileScanner`, which is internal. |
 | `OhData.Server.Benchmarks` | net10.0 | BenchmarkDotNet project comparing OhData's minimal-API pipeline against `Microsoft.AspNetCore.OData`'s `ODataController`+`[EnableQuery]` pipeline; report in `docs/performance.md` (a docsite page — it carries the provenance of every figure) |
 
 **`net8.0` on the two shipping libraries is load-bearing, not vestigial.** Several deliberate API
@@ -344,7 +343,7 @@ does surface locally.
 
 ### `InternalsVisibleTo`
 
-There is no `AssemblyInfo.cs`. The grants are MSBuild `<InternalsVisibleTo Include="..." />` items in `src/OhData.AspNetCore/OhData.AspNetCore.csproj` (the SDK turns each into an assembly attribute), six of them:
+There is no `AssemblyInfo.cs`. The grants are MSBuild `<InternalsVisibleTo Include="..." />` items in `src/OhData.AspNetCore/OhData.AspNetCore.csproj` (the SDK turns each into an assembly attribute), seven of them:
 
 | Grantee | Why |
 |---|---|
@@ -352,6 +351,8 @@ There is no `AssemblyInfo.cs`. The grants are MSBuild `<InternalsVisibleTo Inclu
 | `OhData.AspNetCore.OpenApi` | #228: the OpenAPI companion packages read the internal per-profile `IgnoredPropertyNames` (via `IgnoredPropertyDocsMap`) so generated schemas omit `Ignore()`d properties, matching the real wire shape. They also read the internal `SchemaPropertyCasing` so schema property names match the casing the serializer actually emits. |
 | `OhData.AspNetCore.NSwag` | Same as above. |
 | `OhData.AspNetCore.Swashbuckle` | Same as above. |
+| `OhData.AspNetCore.Mapper` | #665: the three seams the delta move cost the core -- `OhDataBuilder.Services` (the registration is an extension method with no access to private state), `ProfileScanner`'s kind predicate (one scanner, both kinds, without the core naming a type it cannot reference), and `IOhDataStartupValidated` (the marker `MapOhData` resolves to force construction). Internal rather than public on all three: one consumer each. |
+| `OhData.AspNetCore.Mapper.Tests` | #675: the delta-mapping tests moved into the mapper package's own test project, with the code #665 moved. One line needs it -- `Issue488DeltaMappingGapTests` constructs `ProfileScanner` directly, whose constructors and `Scan()` are internal. |
 | `OhData.Server.Benchmarks` | #389: the open-type serialize path is reachable only through internals (`OpenTypeJsonOptions`, its `Build`/`BuildOpenComplexTypeContainerMap` entry points, `IsValidDynamicPropertyNameCached`). The grant exists so `OpenTypeKeyValidationBenchmarks` measures the **shipped** validator rather than a transcribed copy of it — a copy is exactly the mistake that produced a 12x-wrong number for this code path once already. It widens no public API and changes no behaviour. |
 
 `src/OhData.Client/OhData.Client.csproj` carries the same pattern for `OhData.Client.Tests` and `OhData.Client.Benchmarks`.
