@@ -13,7 +13,7 @@ OUT = sys.argv[2] if len(sys.argv) > 2 else None
 
 # ── Concern map: what a wrong answer in this file COSTS, in CLAUDE.md's own terms. ──────────────
 # A  silent AND harmful: the client/operator cannot tell it went wrong.
-# B  silent but bounded: wrong document or wrong refusal, recoverable and visible on inspection.
+# B  wrong but INSPECTABLE: wrong document or wrong refusal, recoverable and visible.
 # C  loud or inert: it throws, it is logged, or nothing observable changes.
 CONCERN = {
     # A -- disclosure boundaries. A wrong answer SERVES data that should be withheld.
@@ -120,13 +120,17 @@ CONCERN.update({
 })
 
 # ── Mutation shapes that are LOUD or INERT regardless of file. ─────────────────────────────────
-PROSE = re.compile(r'throw new|LogWarning|LogDebug|LogError|LogInformation|^\s*"[A-Z][^"]{25,}"|Exception\(')
+# A line whose job is to BUILD a message: an exception, a log call, or an accumulated
+# validation error. Wrong is loud or inspectable whatever the mutator does to it.
+PROSE = re.compile(r'throw new|Log(Warning|Debug|Error|Information|Trace|Critical)\(|'
+                   r'errors\.Add\(|^\s*"[A-Z][^"]{25,}"|Exception\(')
 # A string that IS a contract rather than prose.
 CONTRACT = re.compile(r'ToString\("|"@odata|"\$|"O"|"c"|"D"|ContentType|MediaType|"true"|"false"|'
                       r'Header|"W/|charset|application/')
 
 
 def bucket(fname, mutator, code):
+    unmapped = fname not in CONCERN
     concern, why = CONCERN.get(fname, ('U', 'unclassified -- no concern recorded'))
     line = code.strip()
 
@@ -135,10 +139,17 @@ def bucket(fname, mutator, code):
             return concern, 'contract string'
         if PROSE.search(line):
             return 'C', 'message/log prose'
+        # An unmapped file must never be DECIDED by this branch. "Not evidently a contract"
+        # is a judgment about the string, and nobody has made one about this file yet.
+        if unmapped:
+            return 'U', 'unclassified -- string in a file with no concern recorded'
         return 'C', 'string, not evidently a contract'
 
-    if mutator in ('Statement mutation',) and re.search(r'Log\w+\(', line):
-        return 'C', 'log-only statement'
+    # Prose is prose whatever the mutator. Gating this on String mutation left Statement and
+    # Block mutations over `errors.Add(...)` / `throw new ...` inheriting the file's concern,
+    # which put startup-refusal bookkeeping in tier A.
+    if PROSE.search(line):
+        return 'C', 'message/log prose (non-string mutator)'
 
     return concern, mutator
 
@@ -158,7 +169,16 @@ for path, f in r['files'].items():
                      'status': m['status'], 'tier': tier, 'why': why, 'code': code.strip()[:100]})
 
 tiers = collections.Counter(x['tier'] for x in rows)
-print('SURVIVORS + UNCOVERED: %d   tiers: %s' % (len(rows), dict(tiers)))
+surv = sum(1 for x in rows if x['status'] == 'Survived')
+# Survived and NoCoverage are both "nothing objected", but they are NOT the same finding:
+# Survived means a test ran and passed anyway; NoCoverage means no test reached the line.
+# Keep them separate in every headline figure.
+print('SURVIVED: %d   UNCOVERED: %d   TOTAL: %d' % (surv, len(rows) - surv, len(rows)))
+print('tiers: %s' % ' '.join(
+    '%s=%d(%ds/%du)' % (t, tiers[t],
+                        sum(1 for x in rows if x['tier'] == t and x['status'] == 'Survived'),
+                        sum(1 for x in rows if x['tier'] == t and x['status'] != 'Survived'))
+    for t in ('A', 'B', 'U', 'C') if tiers[t]))
 print()
 
 for tier, label in (('A', 'DECIDE ABOUT -- a wrong answer here is SILENT and harmful'),
