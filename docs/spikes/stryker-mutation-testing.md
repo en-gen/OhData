@@ -441,8 +441,21 @@ The tests exist and pass. They are simply in a project that no longer owns the c
 - any per-project tool — mutation, coverage, package validation — reports a hole that is not there,
   or misses one that is.
 
-Nothing surfaced it because everything is green wherever it lives. Worth its own issue; not fixed
-here, because moving six test files is a change that deserves to be reviewed on its own.
+Nothing surfaced it because everything is green wherever it lives.
+
+**Fixed in #676** (filed as #675): the five delta test files moved to
+`OhData.AspNetCore.Mapper.Tests`, with `TestHostBuilder.cs` linked rather than copied and the
+`IsChanged`/`TryGetChanged` sugar left behind, because `DeltaExtensions` stayed in the core when
+#665 moved delta MAPPING out. Pure relocation, proven by arithmetic: core 3,181 -> 3,097 (-84),
+mapper 163 -> 247 (+84), total unchanged. The mapper's score is now obtainable from the package
+alone, which is what the finding was actually about.
+
+Measured afterwards, and the number moved for a reason worth knowing: **68.54%** against its own
+suite versus **69.24%** against both, with the delta files bit-identical (`DeltaFactory` 156 killed /
+51 survived either way). The difference is entirely **14 timeouts becoming 0**. Stryker counts a
+timeout as KILLED, and running every mutant against the 3,000-test core suite was slow enough to
+time 14 of them out; against the package's own 247 tests they complete, and 5 turn out to be real
+survivors the timeout was masking. The score went down because the measurement got honest.
 
 ## The ceiling, unchanged and now measured at full scale
 
@@ -502,7 +515,7 @@ unwritten reset-before-act discipline and xUnit's per-class serial execution.
 
 - The remaining ~900 core survivors are not triaged individually. The sweep's value here is the
   ranking, not an exhaustive list.
-- The delta test-project split is filed as a finding, not fixed.
+- ~~The delta test-project split is filed as a finding, not fixed.~~ Fixed in #676.
 - Nothing is wired into CI. The gate worth adopting is still the directional one: *a change that
   adds tests should kill mutants that survived before it.*
 
