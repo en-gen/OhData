@@ -15,8 +15,9 @@ for the conditions somebody thought to check. Stryker is the systematic form of 
 
 ## Status
 
-Spike. Nothing is wired into CI and nothing in `src/OhData.AspNetCore/` changed. Tests WERE
-added under `src/OhData.AspNetCore.Tests/` -- see Outcome.
+Spike. Nothing is wired into CI and no shipping source changed. Tests WERE added under
+`src/OhData.AspNetCore.Tests/` -- see Outcome (the six-file pilot) and The comprehensive sweep
+(all six shipping projects).
 
 ## Running it
 
@@ -365,6 +366,144 @@ are purchasable only with tests that would be argued against in review. A gate s
 number would be a gate that rewards writing them.
 
 ---
+
+---
+
+# The comprehensive sweep
+
+The pilot above mutated 6 files in 1 project. This is the whole product: **6 shipping projects,
+~111 source files, ~31,500 lines**. Stryker mutates one project per invocation, so it is six runs —
+`stryker-sweep.sh`, sequenced rather than parallel because every run rebuilds the same solution and
+concurrent runs deadlock on the test assemblies' `bin/`.
+
+## Scores
+
+| Project | Score | Killed | Survived | Timeout | Tested / created | Wall |
+|---|---|---|---|---|---|---|
+| `OhData.AspNetCore.Swashbuckle` | **63.77%** | 38 | 23 | 6 | 67 / 121 | 2m |
+| `OhData.AspNetCore.Mapper` | **69.24%** | 479 | 130 | 14 | 623 / 1,018 | 20m |
+| `OhData.AspNetCore` | **69.21%** | 2,757 | 948 | 59 | 3,764 / 7,735 | 2h07m |
+| `OhData.Client` | **71.48%** | 599 | 129 | 10 | 852 / 1,246 | 2m |
+| `OhData.AspNetCore.OpenApi` | **72.36%** | 85 | 30 | 4 | 119 / 189 | 2m |
+| `OhData.AspNetCore.NSwag` | **72.66%** | 95 | 32 | 6 | 133 / 188 | 3m |
+
+The headline is how **flat** that is: every project lands in a 64–73% band. The scoped pilot's
+88.41% was not the suite's real number — it was the number for six files that had already been
+worked over.
+
+## What the sweep found that the pilot could not
+
+### The largest wholly-uncovered file is a disclosure boundary
+
+`OhDataAuthRequirementsText.cs` — **34 mutants, zero covered**. Nothing in any suite executed it.
+
+That file decides how much authorization detail reaches a generated OpenAPI document.
+`AuthRequirementDisclosure.Kinds` exists to keep exact claim VALUES out of a public document, and
+its own remarks say such a value "can be an internal identifier". Nothing verified that `Kinds`
+withholds them — the difference between `Kinds` and `Full` was, until now, an untested claim.
+
+It is also shared deliberately: both the OpenAPI and NSwag companions render through it so the two
+documents stay byte-identical (#220). One change moves two packages.
+
+**Closed** by `OhDataAuthRequirementsTextTests` (14 tests): the withholding property in both
+directions, the non-sensitive kinds that render at both levels, the three nothing-to-document cases,
+and `AppendSection`'s idempotence — which exists because both companions may register their filter
+and a double-append would ship a duplicated paragraph.
+
+### The worst ratio in the core is wire contract
+
+`ODataEntityKeyUrlFormatter.cs` — **5 killed / 10 survived**. Every `Location`, `Content-Location`,
+`OData-EntityId` and `@odata.id` the server emits is built there, and a client is expected to GET it
+back. A wrong format specifier does not throw; it ships a URL that no longer addresses the entity.
+
+The pilot had tested the *parser* half of that round trip and not the writer, which is how a pair
+ends up self-consistently unconstrained.
+
+**Closed** by `ODataEntityKeyUrlFormatterTests` (23 tests): every branch asserted as the literal
+before percent-encoding (pinning the specifier — dropping `"O"` silently truncates a `DateTime` to
+second precision), plus a `Format`→`Parse` round trip over 14 key shapes, which is the only
+assertion that constrains the two halves together.
+
+### A package whose tests live in another package
+
+The mapper's first run scored **41.01%** with `DeltaFactory.cs` at 242 mutants, *all* `NoCoverage`,
+plus `DeltaProfile.cs` (32) and `DeltaProfileRegistration.cs` (32) — 306 uncovered mutants.
+
+That number was wrong, and the reason is the finding. **#665 moved the delta subsystem into
+`OhData.AspNetCore.Mapper` and left all six of its test files in `OhData.AspNetCore.Tests`.** Run
+against both suites the same code scores 69.24% and those files show 196 killed / 63 survived.
+
+The tests exist and pass. They are simply in a project that no longer owns the code, so:
+
+- the Mapper package's own suite does not exercise half the package;
+- the core's suite exercises code the core does not ship;
+- any per-project tool — mutation, coverage, package validation — reports a hole that is not there,
+  or misses one that is.
+
+Nothing surfaced it because everything is green wherever it lives. Worth its own issue; not fixed
+here, because moving six test files is a change that deserves to be reviewed on its own.
+
+## The ceiling, unchanged and now measured at full scale
+
+**2,885 of the core's 7,735 mutants (37%) were discarded as compile errors** before any test ran.
+Every one is the CS0165 cascade: Stryker mutates an `is { } x` or `out var x`, the mutant fails
+definite assignment, and Safe Mode discards **every mutant in the enclosing method**.
+
+Widening the scope did not recover them — it is not a scoping problem. `OhDataEndpointFactory.cs`
+alone contributes 525 survivors and 140 uncovered out of 2,260 tested, and `MapEntitySet` loses its
+whole 4,486-line body to a single unmutable construct. This is where **#671** stops being a
+readability argument: the unit of loss is the method, so splitting would not remove the CS0165 — it
+would cap each occurrence's blast radius at ~200 lines instead of 4,486.
+
+## The clearest structural signal
+
+Ranked by survivors-plus-uncovered against size, the weakest areas are not the ones the project's
+documentation dwells on:
+
+| File | Killed | Survived | Uncovered |
+|---|---|---|---|
+| `OhDataAuthRequirementsText.cs` | 0 | 0 | **34** |
+| `ODataEntityKeyUrlFormatter.cs` | 5 | **10** | 1 |
+| `BoundOperationDefinition.cs` | 9 | **8** | 0 |
+| `IgnoredPropertyJsonOptions.cs` | 20 | **16** | 1 |
+| `SchemaPropertyCasing.cs` | 38 | 24 | 4 |
+| `ModelBoundAllowlists.cs` | 31 | 15 | 5 |
+| `ODataMaxVersionFilter.cs` | 18 | 13 | 3 |
+| `NavigationTargetAuthorization.cs` | 24 | 7 | **14** |
+
+Two of those are disclosure boundaries (`IgnoredPropertyJsonOptions`, `NavigationTargetAuthorization`)
+and one is #458's allowlist guard. The first two are closed by this change; the rest are left, named,
+for someone to decide about deliberately rather than discover by accident.
+
+## The anti-pattern and assertion-quality passes
+
+Run with `dotnet/skills`' `dotnet-test` bundle (`test-anti-patterns`, `assertion-quality`) over all
+8 test projects / 2,800 test methods.
+
+**Zero genuine Critical or High anti-patterns.** Every mechanical hit was a detector artifact or a
+legitimate idiom — tests delegating to an `Assert*`-named helper, `EnsureSuccessStatusCode()` as the
+oracle, deliberate `[Fact(Skip=…)]` investigation probes, and one "commented-out assertion" that was
+a comment *explaining why* the assertion below it is the load-bearing one.
+
+Assertion quality across the whole suite: 6,942 assertions over 2,800 methods (2.5 average), spread
+9/12, **10 zero-assertion (0%)** — all the does-not-throw idiom — and 30 trivial-only (1%), nearly
+all legitimate `_ReturnsNull` contracts. Negative assertions at 23%, well above the 10% target.
+
+The one finding worth keeping: **state/side-effect assertions register at 1%** in a framework whose
+recurring question is "did the handler run". The suite does verify side effects — through
+hand-rolled static capture fields (`LastPatchChangedProperties`, `store.Ran`) — which is the same
+fact the anti-pattern pass saw as 29 mutable statics. Measured rather than assumed: exactly one of
+those types is referenced from a second file, and that reference is a doc comment, not a dependency.
+So the isolation risk is latent, not live — 29 types, 29 owning classes, held together by an
+unwritten reset-before-act discipline and xUnit's per-class serial execution.
+
+## What was NOT done
+
+- The remaining ~900 core survivors are not triaged individually. The sweep's value here is the
+  ranking, not an exhaustive list.
+- The delta test-project split is filed as a finding, not fixed.
+- Nothing is wired into CI. The gate worth adopting is still the directional one: *a change that
+  adds tests should kill mutants that survived before it.*
 
 ## Is this a good quality gate — especially for agent-generated tests?
 

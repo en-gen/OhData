@@ -374,3 +374,6 @@ AGENTS.md
 StrykerOutput/
 stryker-run.log
 survivors.txt
+sweep-logs/
+sweep-configs/
+sweep.log
