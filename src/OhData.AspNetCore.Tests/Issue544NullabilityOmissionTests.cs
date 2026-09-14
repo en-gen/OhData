@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using System.Xml.Linq;
+using Microsoft.Extensions.DependencyInjection;
 using OhData;
 using Xunit;
 
@@ -609,6 +610,85 @@ public class Issue544NullabilityOmissionTests
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         Assert.Null(N544UnvalidatedProfile.LastPosted!.Initialized);
     }
+
+    // ── #565: the case-SENSITIVE binder arm is otherwise never taken ───────────────
+    //
+    // BuildBinderBodyNameTable picks its dictionary comparer from the binder:
+    //
+    //   (jsonOptions ?? _pascalCaseSerializerOptions).PropertyNameCaseInsensitive
+    //       ? StringComparer.OrdinalIgnoreCase
+    //       : StringComparer.Ordinal
+    //
+    // Every host above runs under JsonSerializerDefaults.Web (PropertyNameCaseInsensitive =
+    // true, inherited by startupJsonOptions from the host's HttpJsonOptions), so only the
+    // OrdinalIgnoreCase arm is ever exercised. These two tests turn that off explicitly -- the
+    // one way a write-body binder is ever case-SENSITIVE -- to take the other one.
+
+    private static Task<TestFixture> BuildCaseSensitiveAsync(Action<OhDataBuilder> configure) =>
+        TestHostBuilder.BuildAsync(
+            configure,
+            configureServices: s => s.ConfigureHttpJsonOptions(
+                j => j.SerializerOptions.PropertyNameCaseInsensitive = false));
+
+    /// <summary>
+    /// The required-property gate (#544/#545), under a case-sensitive binder, reusing
+    /// N544Stamped's multi-word CreatedBy (a single-word property collapses onto its own
+    /// OrdinalIgnoreCase CLR-name alias regardless of which arm ran -- see the block comment
+    /// above N544Stamped -- so it cannot tell the two comparers apart). An exact-case null is
+    /// still bound by STJ and still reported; a wrong-case key is never bound at all, so the
+    /// gate has nothing to report and the write proceeds.
+    /// </summary>
+    [Fact]
+    public async Task Post_ExplicitNull_UnderACaseSensitiveHost_ExactCaseIs400_WrongCaseIs201()
+    {
+        await using var fx = await BuildCaseSensitiveAsync(
+            o => o.AddEntitySetProfile<N544StampedProfile>());
+
+        N544StampedProfile.LastPosted = null;
+        using var exactCase = new StringContent(
+            "{\"Id\":1,\"CreatedBy\":null}", Encoding.UTF8, "application/json");
+        var exactResponse = await fx.Client.PostAsync("/odata/N544Stamped", exactCase);
+        Assert.Equal(HttpStatusCode.BadRequest, exactResponse.StatusCode);
+        Assert.Null(N544StampedProfile.LastPosted);
+
+        var json = await exactResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("CreatedBy", json.GetProperty("error").GetProperty("target").GetString());
+
+        N544StampedProfile.LastPosted = null;
+        using var wrongCase = new StringContent(
+            "{\"Id\":2,\"createdby\":null}", Encoding.UTF8, "application/json");
+        var wrongResponse = await fx.Client.PostAsync("/odata/N544Stamped", wrongCase);
+        Assert.Equal(HttpStatusCode.Created, wrongResponse.StatusCode);
+        Assert.NotNull(N544StampedProfile.LastPosted);
+    }
+
+    /// <summary>
+    /// The deep-write strip table (#506), under the same case-sensitive binder. A navigation the
+    /// body names with exact case is still stripped (nulled) before <c>Post</c> runs; one named
+    /// with the wrong case is never bound by STJ in the first place, so it is not "present" and
+    /// must not be stripped -- it is left at its CLR default (the constructor's empty list).
+    /// </summary>
+    [Fact]
+    public async Task Post_DeepWriteStrip_UnderACaseSensitiveHost_ExactCaseIsStripped_WrongCaseIsNot()
+    {
+        await using var fx = await BuildCaseSensitiveAsync(
+            o => o.AddEntitySetProfile<N565ThingProfile>());
+
+        N565ThingProfile.LastPosted = null;
+        using var exactCase = new StringContent(
+            "{\"Id\":1,\"Parts\":[{\"Id\":9}]}", Encoding.UTF8, "application/json");
+        var exactResponse = await fx.Client.PostAsync("/odata/N565Things", exactCase);
+        Assert.Equal(HttpStatusCode.Created, exactResponse.StatusCode);
+        Assert.Null(N565ThingProfile.LastPosted!.Parts);
+
+        N565ThingProfile.LastPosted = null;
+        using var wrongCase = new StringContent(
+            "{\"Id\":2,\"parts\":[{\"Id\":9}]}", Encoding.UTF8, "application/json");
+        var wrongResponse = await fx.Client.PostAsync("/odata/N565Things", wrongCase);
+        Assert.Equal(HttpStatusCode.Created, wrongResponse.StatusCode);
+        Assert.NotNull(N565ThingProfile.LastPosted!.Parts);
+        Assert.Empty(N565ThingProfile.LastPosted!.Parts);
+    }
 }
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────────
@@ -822,6 +902,41 @@ internal class N544StampedProfile : EntitySetProfile<int, N544Stamped>
             LastPut = thing;
             thing.Id = id;
             return OhDataResult.Success(thing);
+        };
+    }
+}
+
+/// <summary>#565's deep-write-strip fixture -- a navigation, and nothing else.</summary>
+internal class N565Part
+{
+    public int Id { get; set; }
+}
+
+internal class N565Thing
+{
+    public int Id { get; set; }
+    public List<N565Part> Parts { get; set; } = new();
+}
+
+internal class N565ThingProfile : EntitySetProfile<int, N565Thing>
+{
+    public static N565Thing? LastPosted;
+
+    public N565ThingProfile() : base(x => x.Id)
+    {
+        EntitySetName = "N565Things";
+        // AllowDeepWrites defaults to false: a body-named Parts value is stripped before Post
+        // runs; an unnamed one is left at the constructor's default.
+
+        HasMany(
+            x => x.Parts,
+            getAll: (_, _) => Task.FromResult<IEnumerable<N565Part>>(Array.Empty<N565Part>()));
+
+        GetAll = _ => OhDataResult.Success<IEnumerable<N565Thing>>(Array.Empty<N565Thing>());
+        Post = (thing, _) =>
+        {
+            LastPosted = thing;
+            return OhDataResult.Success<N565Thing>(thing);
         };
     }
 }
