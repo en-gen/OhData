@@ -64,7 +64,7 @@ mutant is built to refute:
 
 ## Baseline
 
-Measured at `414d633`, Release, `--no-build`, 32-core machine:
+Measured at `e290c63`, Release, `--no-build`, 32-core machine:
 
 ```
 Passed!  - Failed: 0, Passed: 3181, Skipped: 17, Total: 3198, Duration: 49 s
@@ -75,7 +75,7 @@ That 53 s is the number `perTest` has to avoid paying per mutant.
 
 ## Results: the first run
 
-Run at `414d633` + this branch's config, 2026-09-11, 19m38s wall.
+Run at `e290c63` + this branch's config, 2026-09-11, 19m38s wall.
 
 ```
 7735  mutants created
