@@ -107,7 +107,7 @@ Content-Type: application/json
 
 # ── Movies — write operations ─────────────────────────────────────────────────
 
-### Create a movie (v1 -- AllowDeepInsert is false; any "cast" here would be stripped)
+### Create a movie (v1 -- AllowDeepWrites is false; any "cast" here would be stripped)
 POST {{baseUrl}}/v1/Movies
 Content-Type: application/json
 
@@ -156,7 +156,7 @@ GET {{baseUrl}}/v1/Genres('SCIFI')
 
 # ── v2: deep insert, Cast/Studio navigation, $expand, $ref ────────────────────
 
-### Deep insert: AllowDeepInsert = true on v2 -- nested "cast" entries are linked to
+### Deep insert: AllowDeepWrites = true on v2 -- nested "cast" entries are linked to
 ### EXISTING actors by id (23 = Leonardo DiCaprio, 24 = Kate Winslet in the seed data)
 POST {{baseUrl}}/v2/Movies
 Content-Type: application/json
