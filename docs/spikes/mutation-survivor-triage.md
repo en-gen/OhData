@@ -10,8 +10,8 @@ package (2 h 04 m, **70.02 %**) and the **mapper** package (**68.54 %**). Reprod
 `python stryker-triage.py <report.json> [out.md]` — the tiering below is that script's output, so the
 concern map it carries is the thing to edit when a file's failure mode changes.
 
-**Provenance.** The runs started at 11:05 and 12:43; `59a7b10` was committed at 13:00. The mutated
-source is nonetheless `59a7b10`'s — `git diff f4154f0 59a7b10 -- src/` is empty, so the commit
+**Provenance.** The runs started at 11:05 and 12:43; `2af1f30` was committed at 13:00. The mutated
+source is nonetheless `2af1f30`'s — `git diff 8aca662 2af1f30 -- src/` is empty, so the commit
 touched no mutated file.
 
 ## How to read a survivor
