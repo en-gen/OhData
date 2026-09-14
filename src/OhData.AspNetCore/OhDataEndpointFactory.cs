@@ -10512,7 +10512,14 @@ internal static class OhDataEndpointFactory
                   BodyType = typeof(TModel),
                   Description = $"The {name} entity to create."
               });
-            ApplyOperationAuth(rb, OhDataOperation.Create);
+            // #526: this is the COLLECTION POST ("/{name}") -- it carries no {key} segment, so
+            // keyBased: true would attach a Layer B resource filter that reads
+            // RouteValues["key"], finds nothing, and always calls next -- a per-request no-op.
+            // The Create resource check for THIS route is already performed inline above, against
+            // the deserialized model (CheckResourceAuthAsync), which is the only way to evaluate a
+            // resource-based rule before the entity exists. Contrast the nav-POST create route
+            // below (POST /{name}({key})/{nav}), which IS key-based and keeps keyBased: true.
+            ApplyOperationAuth(rb, OhDataOperation.Create, keyBased: false);
         }
 
         if (source.HasPut)
