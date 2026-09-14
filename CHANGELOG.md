@@ -645,6 +645,43 @@ status codes or headers.
 
 ### Fixed
 
+- **A `char` entity key now round-trips through the URL the server itself emits, under any culture
+  (#677, #682).** `ODataEntityKeyUrlFormatter` has always single-quoted a `char` key, but
+  `ODataKeyParser.Parse` had no `TypeCode.Char` case, so the quoted form fell through to
+  `TypeDescriptor` and was rejected — the server emitted a `Location`/`@odata.id` URL it then
+  `400`d on `GET`. Fixed by stripping the quotes for a quoted `char` literal before falling back
+  to `TypeDescriptor`, so a bare unquoted character (the pre-existing shape) keeps parsing exactly
+  as before.
+
+  The delimiter test that change added — `rawKey.StartsWith("'") && rawKey.EndsWith("'")` — was
+  itself broken, and it shared the defect with the pre-existing `string` branch it copied the
+  shape from: `string.StartsWith(string)`/`EndsWith(string)` with no `StringComparison` compare
+  under `CurrentCulture`, and under ICU a `'` followed by a combining mark collates as one element,
+  so `"'̀abc'".StartsWith("'")` is `False`. For `char` that meant the fix didn't fire for 486
+  affected code points and the request hit the exact #677 defect again; for `string` it was worse
+  — `Parse("'̀abc'", typeof(string))` returned `"'̀abc'"` with the quotes still attached,
+  a silently wrong key under a `200`/`404` rather than a `400`. Deployment-dependent besides: zero
+  failures with `InvariantGlobalization` enabled, so the same URL misbehaves on an ICU host and not
+  on the container image it was tested from.
+
+  Both branches now share one `IsQuotedLiteral` predicate, using the `char`-overload
+  `StartsWith('\'')`/`EndsWith('\'')` (ordinal by definition) — one rule for what a quoted literal
+  looks like, stated once, with the unescaping (`string` doubles an embedded quote, `char` never
+  does) staying at each call site. The `char` case has to stay inside the try-protected switch
+  rather than become a pre-try `if` like `string`'s: `char.Parse` throws on an empty or
+  multi-character literal, and that throw is what the surrounding `catch` converts to
+  `ODataKeyFormatException`.
+
+  `ODataEntityKeyUrlFormatterTests.RoundTrippableKeys` gained a `char` and a `string` case whose
+  first character after the opening quote is `U+0300`, ablation-verified against the reverted
+  (culture-sensitive) predicate — both fail, nothing else does. `ODataEntityKeyUrlFormatterTests`
+  keeps the formatter/parser *pairing* (round-trip and literal-shape assertions);
+  `ODataKeyParserTests` gained the parser-only characterization of the bare-character and
+  malformed-quoted-literal shapes, which pass even with the fix reverted and so belong there
+  instead. `ODataEntityKeyUrlFormatter`'s class doc now qualifies its round-trip claim: an unpaired
+  surrogate and a literal containing `%2F` still do not round-trip (#683, filed separately, not
+  fixed here).
+
 - **A nested `$filter`/`$orderby` on a delegate-backed navigation `500`d when any parent had no
   related rows (#664).** #650's shaper opened with
   `Expression.Convert(src, typeof(IEnumerable<elem>))`, but `ExpandLevelAsync` substitutes
