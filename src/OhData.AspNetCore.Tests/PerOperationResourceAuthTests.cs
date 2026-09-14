@@ -116,12 +116,58 @@ internal sealed class ResourceNoGetByIdProfile : EntitySetProfile<int, ResOwnedI
     }
 }
 
+// ── #526: the KEY-BASED navigation-POST create route (POST /{Set}({key})/{Nav}) still runs
+// its Layer B resource filter after `ApplyOperationAuth`'s `keyBased` parameter was corrected
+// to `false` on the (non-key-based) COLLECTION POST call site. Separate fixtures from
+// ResOwnedItem/ResOwnedItemHandler above: a nav-post-capable parent, and its own handler, so
+// this test cannot pass by accident through a fixture some other test already exercises.
+
+internal sealed class NavCreateParent
+{
+    public int Id { get; set; }
+    public string Owner { get; set; } = "";
+    public List<NavCreateChild> Notes { get; set; } = new();
+}
+
+internal sealed class NavCreateChild
+{
+    public int Id { get; set; }
+    public string Text { get; set; } = "";
+}
+
+internal sealed class NavCreateParentHandler : AuthorizationHandler<OperationAuthorizationRequirement, NavCreateParent>
+{
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext ctx, OperationAuthorizationRequirement req, NavCreateParent item)
+    {
+        string? user = ctx.User.Identity?.Name;
+        if (user is not null && item.Owner == user)
+            ctx.Succeed(req);
+        return Task.CompletedTask;
+    }
+}
+
+internal sealed class ResourceNavCreateProfile : EntitySetProfile<int, NavCreateParent>
+{
+    public ResourceNavCreateProfile() : base(x => x.Id)
+    {
+        EntitySetName = "ResNavCreate";
+        var store = new List<NavCreateParent> { new() { Id = 1, Owner = "alice" } };
+        GetById = (id, ct) => OhDataResult.Success(store.FirstOrDefault(x => x.Id == id));
+        HasMany(x => x.Notes,
+            getAll: null,
+            post: (key, child, ct) => Task.FromResult<NavCreateChild?>(child));
+        ConfigureAuthorization(a => a.Create(c => c.RequireResource()));
+    }
+}
+
 internal static class ResourceAuthTestHost
 {
     public static async Task<TestFixture> BuildAsync(
         Action<OhDataBuilder> configure,
         bool registerHandler = true,
-        Action<AuthorizationOptions>? policies = null)
+        Action<AuthorizationOptions>? policies = null,
+        Action<IServiceCollection>? extraServices = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -138,6 +184,7 @@ internal static class ResourceAuthTestHost
             builder.Services.AddScoped<IAuthorizationHandler, ResOwnedItemHandler>();
             builder.Services.AddScoped<IAuthorizationHandler, SameOwnerHandler>();
         }
+        extraServices?.Invoke(builder.Services);
 
         builder.Services.AddOhData(o => { o.WithPrefix("/odata"); configure(o); });
 
@@ -280,5 +327,42 @@ public class PerOperationResourceAuthTests
     {
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await ResourceAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<ResourceNoGetByIdProfile>()));
+    }
+
+    // ── #526: the collection POST's Create resource check is unaffected ─────
+    //
+    // #526 corrected `ApplyOperationAuth`'s `keyBased` argument to `false` on the collection
+    // POST call site. That argument only controls whether AttachResourceFilter's endpoint
+    // filter is attached, and the filter is a provable per-request no-op on this route in
+    // EITHER case: it reads RouteValues["key"], which a route with no {key} segment never
+    // populates, so it always falls through to `next` regardless of keyBased. The collection
+    // POST's actual Create check is `CheckResourceAuthAsync`, called inline against the
+    // deserialized model further up in the handler, and is untouched by this fix.
+    //
+    // Post_ChecksIncomingEntity above already exercises that inline check end to end (alice
+    // creating her own row passes, bob creating alice's row is forbidden) and is unchanged by
+    // the fix -- there is no behavior for a black-box HTTP test to distinguish before/after,
+    // so no new collection-POST test is added here. What IS worth pinning is the route this
+    // fix does NOT touch: the KEY-BASED navigation-POST create route, which still needs
+    // AttachResourceFilter's real endpoint filter to work. See
+    // NavigationPostCreate_OwnerOnly below.
+
+    // ── #526 regression guard: the KEY-BASED nav-POST create route (unaffected by this fix,
+    // keyBased stays true there) still resource-checks the PARENT loaded by
+    // AttachResourceFilter's endpoint filter before the handler runs ──────────
+
+    [Theory]
+    [InlineData("alice", true)]
+    [InlineData("bob", false)]
+    [InlineData(null, false)]
+    public async Task NavigationPostCreate_OwnerOnly(string? identity, bool passes)
+    {
+        await using var fx = await ResourceAuthTestHost.BuildAsync(
+            o => o.AddEntitySetProfile<ResourceNavCreateProfile>(),
+            extraServices: s => s.AddScoped<IAuthorizationHandler, NavCreateParentHandler>());
+        var resp = await fx.Client.SendAsync(
+            Req(HttpMethod.Post, "/odata/ResNavCreate(1)/Notes", identity, "{\"text\":\"hi\"}"));
+        if (passes) Assert.True(Passed(resp.StatusCode), $"got {(int)resp.StatusCode}");
+        else Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
     }
 }
