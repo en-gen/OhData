@@ -36,6 +36,14 @@ internal static class ODataKeyParser
         {
             switch (Type.GetTypeCode(keyType))
             {
+                // #677: ODataEntityKeyUrlFormatter always single-quotes a char key -- strip the
+                // quotes to match. Unlike the string branch there's nothing to unescape: the
+                // formatter never doubles a quote inside a char literal, so the character between
+                // the delimiters (even a literal ' itself, formatted as ''') is the whole answer.
+                // An unquoted bare character (the pre-#677 shape) falls through to TypeDescriptor
+                // below and keeps working.
+                case TypeCode.Char when rawKey.StartsWith("'") && rawKey.EndsWith("'") && rawKey.Length >= 2:
+                    return char.Parse(rawKey[1..^1]);
                 case TypeCode.Int16: return short.Parse(rawKey, CultureInfo.InvariantCulture);
                 case TypeCode.Int32: return int.Parse(rawKey, CultureInfo.InvariantCulture);
                 case TypeCode.Int64: return long.Parse(rawKey, CultureInfo.InvariantCulture);

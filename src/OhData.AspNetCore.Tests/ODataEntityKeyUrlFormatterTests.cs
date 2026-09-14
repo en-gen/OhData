@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel;
 using OhData;
 using Xunit;
 
@@ -59,15 +60,42 @@ public class ODataEntityKeyUrlFormatterTests
             Literal(Guid.Parse("3fa85f64-5717-4562-b3fc-2c963f66afa6")));
 
     /// <summary>
-    /// A <see cref="char"/> key is single-quoted by the writer -- and #677 is that the parser
-    /// cannot read that back, which is why <c>char</c> is absent from the round-trip theory
-    /// below. This pins the writer's current behaviour only; do not read it as the pair working.
+    /// A <see cref="char"/> key is single-quoted by the writer, and since #677
+    /// <see cref="ODataKeyParser"/> strips the quotes back off -- the pair round-trips, so
+    /// <c>char</c> is in the theory below alongside every other shape.
     /// </summary>
     [Fact]
-    public void CharKey_IsSingleQuoted_ButDoesNotRoundTrip_See677()
+    public void CharKey_IsSingleQuoted_AndRoundTrips()
     {
         Assert.Equal("'x'", Literal('x'));
-        Assert.Throws<ODataKeyFormatException>(() => ODataKeyParser.Parse(Literal('x'), typeof(char)));
+        Assert.Equal('x', ODataKeyParser.Parse(Literal('x'), typeof(char)));
+    }
+
+    /// <summary>
+    /// The formatter doesn't double an embedded quote inside a char literal the way it does for
+    /// a string -- there's only ever one character between the delimiters, quote or not -- so
+    /// <c>'''</c> (the literal for the char <c>'</c>) still has to parse back to <c>'</c>.
+    /// </summary>
+    [Fact]
+    public void CharKey_ThatIsItselfAQuote_RoundTrips()
+    {
+        Assert.Equal("'''", Literal('\''));
+        Assert.Equal('\'', ODataKeyParser.Parse(Literal('\''), typeof(char)));
+    }
+
+    /// <summary>
+    /// A bare, unquoted character is the pre-#677 shape -- it never reaches the new quoted
+    /// branch and still falls through to <see cref="TypeDescriptor"/>, exactly as before.
+    /// </summary>
+    [Fact]
+    public void CharKey_UnquotedBareCharacter_StillParses() =>
+        Assert.Equal('x', ODataKeyParser.Parse("x", typeof(char)));
+
+    [Fact]
+    public void CharKey_EmptyOrMultiCharacterQuotedLiteral_FailsCleanly()
+    {
+        Assert.Throws<ODataKeyFormatException>(() => ODataKeyParser.Parse("''", typeof(char)));
+        Assert.Throws<ODataKeyFormatException>(() => ODataKeyParser.Parse("'ab'", typeof(char)));
     }
 
     /// <summary>
@@ -116,6 +144,8 @@ public class ODataEntityKeyUrlFormatterTests
         "a b/c?d#e",
         new DateOnly(2026, 9, 12),
         new TimeOnly(13, 45, 30),
+        'x',
+        '\'',
     };
 
     /// <summary>
