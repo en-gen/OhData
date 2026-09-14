@@ -121,7 +121,10 @@ CONCERN.update({
 # A line whose job is to BUILD a message: an exception, a log call, or an accumulated
 # validation error. Wrong is loud or inspectable whatever the mutator does to it.
 PROSE = re.compile(r'throw new|Log(Warning|Debug|Error|Information|Trace|Critical)\(|'
-                   r'errors\.Add\(|^"[A-Z][^"]{25,}"|Exception\(')
+                   r'errors\.Add\(|Exception\(')
+# A wrapped continuation that IS the message: a bare long string literal alone on the
+# line. Anchored, so it is its own pattern rather than a caret inside an alternation.
+PROSE_LINE = re.compile(r'"[A-Z][^"]{25,}"')
 # A string that IS a contract rather than prose.
 CONTRACT = re.compile(r'ToString\("|"@odata|"\$|ContentType|MediaType|"true"|"false"|'
                       r'Header|application/')
@@ -134,7 +137,7 @@ def bucket(fname, mutator, code):
     if mutator == 'String mutation':
         if CONTRACT.search(line):
             return concern, 'contract string'
-        if PROSE.search(line):
+        if PROSE.search(line) or PROSE_LINE.match(line):
             return 'C', 'message/log prose'
         # An unmapped file must never be DECIDED by this branch. "Not evidently a contract"
         # is a judgment about the string, and nobody has made one about this file yet.
@@ -144,13 +147,14 @@ def bucket(fname, mutator, code):
 
     # Prose is prose whatever the mutator -- gating this on String mutation puts
     # errors.Add / throw new Statement mutants in the file's tier.
-    if PROSE.search(line):
+    if PROSE.search(line) or PROSE_LINE.match(line):
         return 'C', 'message/log prose (non-string mutator)'
 
     return concern, mutator
 
 
-r = json.load(open(REPORT, encoding='utf-8'))
+with open(REPORT, encoding='utf-8') as fh:
+    r = json.load(fh)
 rows = []
 for path, f in r['files'].items():
     fname = os.path.basename(path.replace('\\', '/'))
