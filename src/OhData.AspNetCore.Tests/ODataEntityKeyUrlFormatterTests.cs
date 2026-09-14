@@ -59,16 +59,22 @@ public class ODataEntityKeyUrlFormatterTests
             Literal(Guid.Parse("3fa85f64-5717-4562-b3fc-2c963f66afa6")));
 
     /// <summary>
-    /// A <see cref="char"/> key is single-quoted by the writer -- and #677 is that the parser
-    /// cannot read that back, which is why <c>char</c> is absent from the round-trip theory
-    /// below. This pins the writer's current behaviour only; do not read it as the pair working.
+    /// A <see cref="char"/> key is single-quoted by the writer, doubling nothing -- there's only
+    /// ever one character between the delimiters, quote or not, so <c>'''</c> is the literal for
+    /// the char <c>'</c> itself. Since #677 the pair round-trips (pinned by the theory below,
+    /// which is where the Parse half of this used to live).
     /// </summary>
     [Fact]
-    public void CharKey_IsSingleQuoted_ButDoesNotRoundTrip_See677()
+    public void CharKey_IsSingleQuoted()
     {
         Assert.Equal("'x'", Literal('x'));
-        Assert.Throws<ODataKeyFormatException>(() => ODataKeyParser.Parse(Literal('x'), typeof(char)));
+        Assert.Equal("'''", Literal('\''));
     }
+
+    // CharKey_UnquotedBareCharacter_StillParses and
+    // CharKey_EmptyOrMultiCharacterQuotedLiteral_FailsCleanly moved to ODataKeyParserTests --
+    // both are characterization of ODataKeyParser.Parse alone (they pass with the #677 fix
+    // reverted) rather than tests of the formatter/parser pair this class owns.
 
     /// <summary>
     /// Round-trip ("O") for the two instant types: the parser reads them with
@@ -116,6 +122,14 @@ public class ODataEntityKeyUrlFormatterTests
         "a b/c?d#e",
         new DateOnly(2026, 9, 12),
         new TimeOnly(13, 45, 30),
+        'x',
+        '\'',
+        // #682: a combining mark (U+0300) right after the opening quote is the case that broke
+        // the culture-sensitive StartsWith("'") delimiter test -- under ICU, "'" + U+0300
+        // collates as one element, so StartsWith("'") returned false and the quotes were never
+        // stripped. One case for each affected branch.
+        '\u0300',
+        "\u0300abc",
     };
 
     /// <summary>

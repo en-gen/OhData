@@ -37,6 +37,25 @@ public class ODataKeyParserTests
     // The formatter/parser round trip lives in ODataEntityKeyUrlFormatterTests, which owns both
     // halves and covers a strict superset of the string shapes.
 
+    /// <summary>
+    /// Characterization of the <c>char</c> branch's two non-round-tripping shapes: a bare,
+    /// unquoted character (the pre-#677 shape, never reaching the quoted branch) and a quoted
+    /// literal with the wrong number of characters inside. Both pass with #677 reverted, which is
+    /// why they live here rather than in <c>ODataEntityKeyUrlFormatterTests</c>, whose theory
+    /// pins the formatter/parser PAIR.
+    /// </summary>
+    [Theory]
+    [InlineData("x", 'x')]
+    [InlineData("'x'", 'x')]
+    public void CharKey_UnquotedOrQuoted_Parses(string raw, char expected) =>
+        Assert.Equal(expected, ODataKeyParser.Parse(raw, typeof(char)));
+
+    [Theory]
+    [InlineData("''")]
+    [InlineData("'ab'")]
+    public void CharKey_EmptyOrMultiCharacterQuotedLiteral_FailsCleanly(string raw) =>
+        Assert.Throws<ODataKeyFormatException>(() => ODataKeyParser.Parse(raw, typeof(char)));
+
     [Fact]
     public void TimeOnlyKey_Parses() =>
         Assert.Equal(new TimeOnly(13, 45, 30), ODataKeyParser.Parse("13:45:30", typeof(TimeOnly)));
