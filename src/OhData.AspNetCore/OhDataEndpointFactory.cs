@@ -12336,7 +12336,9 @@ internal static class OhDataEndpointFactory
             // Issue #181: document the function's query-string parameters.
             var boundFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: false);
             if (boundFnQueryParams is not null) rb.WithMetadata(boundFnQueryParams);
-            ApplyOperationAuth(rb, OhDataOperation.Invoke, fnCapture.Name);
+            // #526: COLLECTION-bound -- mapped on entityGroup as "/{FunctionName}", no {key}
+            // segment. The entity-bound twin further down keeps keyBased: true.
+            ApplyOperationAuth(rb, OhDataOperation.Invoke, fnCapture.Name, keyBased: false);
         }
 
         // Bound actions — POST /{EntitySet}/{ActionName} with JSON body params
@@ -12435,7 +12437,9 @@ internal static class OhDataEndpointFactory
                         string.Join(", ", actionCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
             }
-            ApplyOperationAuth(rb, OhDataOperation.Invoke, actionCapture.Name);
+            // #526: COLLECTION-bound -- mapped on entityGroup as "/{ActionName}", no {key}
+            // segment. The entity-bound twin further down keeps keyBased: true.
+            ApplyOperationAuth(rb, OhDataOperation.Invoke, actionCapture.Name, keyBased: false);
         }
 
         // Gap 7: Entity-level bound functions — GET /{name}({key})/{fn.Name}
