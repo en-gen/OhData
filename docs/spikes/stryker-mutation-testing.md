@@ -513,8 +513,9 @@ unwritten reset-before-act discipline and xUnit's per-class serial execution.
 
 ## What was NOT done
 
-- The remaining ~900 core survivors are not triaged individually. The sweep's value here is the
-  ranking, not an exhaustive list.
+- ~~The remaining ~900 core survivors are not triaged individually.~~ Triaged in
+  [`mutation-survivor-triage.md`](mutation-survivor-triage.md), which carries the per-tier decisions
+  and the concern map that produces them.
 - ~~The delta test-project split is filed as a finding, not fixed.~~ Fixed in #676.
 - Nothing is wired into CI. The gate worth adopting is still the directional one: *a change that
   adds tests should kill mutants that survived before it.*
