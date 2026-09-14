@@ -10512,7 +10512,14 @@ internal static class OhDataEndpointFactory
                   BodyType = typeof(TModel),
                   Description = $"The {name} entity to create."
               });
-            ApplyOperationAuth(rb, OhDataOperation.Create);
+            // #526: this is the COLLECTION POST ("/{name}") -- it carries no {key} segment, so
+            // keyBased: true would attach a Layer B resource filter that reads
+            // RouteValues["key"], finds nothing, and always calls next -- a per-request no-op.
+            // The Create resource check for THIS route is already performed inline above, against
+            // the deserialized model (CheckResourceAuthAsync), which is the only way to evaluate a
+            // resource-based rule before the entity exists. Contrast the nav-POST create route
+            // below (POST /{name}({key})/{nav}), which IS key-based and keeps keyBased: true.
+            ApplyOperationAuth(rb, OhDataOperation.Create, keyBased: false);
         }
 
         if (source.HasPut)
@@ -12329,7 +12336,9 @@ internal static class OhDataEndpointFactory
             // Issue #181: document the function's query-string parameters.
             var boundFnQueryParams = BuildFunctionQueryParametersMetadata(fnCapture.Parameters, skipKey: false);
             if (boundFnQueryParams is not null) rb.WithMetadata(boundFnQueryParams);
-            ApplyOperationAuth(rb, OhDataOperation.Invoke, fnCapture.Name);
+            // #526: COLLECTION-bound -- mapped on entityGroup as "/{FunctionName}", no {key}
+            // segment. The entity-bound twin further down keeps keyBased: true.
+            ApplyOperationAuth(rb, OhDataOperation.Invoke, fnCapture.Name, keyBased: false);
         }
 
         // Bound actions — POST /{EntitySet}/{ActionName} with JSON body params
@@ -12428,7 +12437,9 @@ internal static class OhDataEndpointFactory
                         string.Join(", ", actionCapture.Parameters.Select(p => $"{p.Name} ({p.ParameterType.Name})")) + "."
                 });
             }
-            ApplyOperationAuth(rb, OhDataOperation.Invoke, actionCapture.Name);
+            // #526: COLLECTION-bound -- mapped on entityGroup as "/{ActionName}", no {key}
+            // segment. The entity-bound twin further down keeps keyBased: true.
+            ApplyOperationAuth(rb, OhDataOperation.Invoke, actionCapture.Name, keyBased: false);
         }
 
         // Gap 7: Entity-level bound functions — GET /{name}({key})/{fn.Name}
