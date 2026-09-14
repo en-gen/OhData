@@ -27,7 +27,7 @@ internal static class ODataKeyParser
         // String keys arrive as 'value' -- strip the surrounding single quotes
         if (keyType == typeof(string))
         {
-            return rawKey.StartsWith("'") && rawKey.EndsWith("'") && rawKey.Length >= 2
+            return IsQuotedLiteral(rawKey)
                 ? rawKey[1..^1].Replace("''", "'")
                 : rawKey;
         }
@@ -36,13 +36,10 @@ internal static class ODataKeyParser
         {
             switch (Type.GetTypeCode(keyType))
             {
-                // #677: ODataEntityKeyUrlFormatter always single-quotes a char key -- strip the
-                // quotes to match. Unlike the string branch there's nothing to unescape: the
-                // formatter never doubles a quote inside a char literal, so the character between
-                // the delimiters (even a literal ' itself, formatted as ''') is the whole answer.
-                // An unquoted bare character (the pre-#677 shape) falls through to TypeDescriptor
-                // below and keeps working.
-                case TypeCode.Char when rawKey.StartsWith("'") && rawKey.EndsWith("'") && rawKey.Length >= 2:
+                // #677: unlike string, a quoted char literal is never unescaped (nothing to
+                // double). Stays inside the try -- char.Parse throws on an empty or
+                // multi-character literal, which the catch below converts to ODataKeyFormatException.
+                case TypeCode.Char when IsQuotedLiteral(rawKey):
                     return char.Parse(rawKey[1..^1]);
                 case TypeCode.Int16: return short.Parse(rawKey, CultureInfo.InvariantCulture);
                 case TypeCode.Int32: return int.Parse(rawKey, CultureInfo.InvariantCulture);
@@ -82,4 +79,13 @@ internal static class ODataKeyParser
             throw new ODataKeyFormatException($"Cannot parse '{rawKey}' as {keyType.Name}.", ex);
         }
     }
+
+    // #682: the delimiter test is one rule shared by the string and char branches, and it must be
+    // ordinal. string.StartsWith(string)/EndsWith(string) with no StringComparison default to
+    // CurrentCulture, and under ICU a ' followed by a combining mark (U+0300, say) collates as one
+    // element, so StartsWith("'") on such a key returned false and the quotes were never stripped.
+    // These are wire-format delimiters, not culture-sensitive text; the char overloads used below
+    // are ordinal by definition.
+    private static bool IsQuotedLiteral(string rawKey) =>
+        rawKey.Length >= 2 && rawKey.StartsWith('\'') && rawKey.EndsWith('\'');
 }

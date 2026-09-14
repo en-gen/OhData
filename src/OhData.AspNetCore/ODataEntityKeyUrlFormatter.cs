@@ -8,7 +8,11 @@ namespace OhData;
 /// inside parentheses, e.g. <c>Products(42)</c>, <c>Products('encoded value')</c>,
 /// <c>Products(3fa85f64-5717-4562-b3fc-2c963f66afa6)</c> (OData Part 2 §4.3.1 -- Addressing
 /// Entities). Mirrors <see cref="ODataKeyParser"/> so entity-id URLs the server emits (POST 201
-/// Location/Content-Location, OData-EntityId, @odata.id) round-trip back through key parsing.
+/// Location/Content-Location, OData-EntityId, @odata.id) round-trip back through key parsing --
+/// with two known exceptions tracked at #683 and not fixed here: an unpaired surrogate in a
+/// <see cref="char"/> or <see cref="string"/> key becomes U+FFFD (<c>Uri.EscapeDataString</c>
+/// substitutes rather than throwing), and a literal containing <c>%2F</c> does not decode before
+/// reaching the parser.
 /// </summary>
 /// <remarks>
 /// S4 fix: the previous approach -- <c>string.Format(CultureInfo.InvariantCulture, "{0}", key)</c>

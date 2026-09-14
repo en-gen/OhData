@@ -1,5 +1,4 @@
 using System;
-using System.ComponentModel;
 using OhData;
 using Xunit;
 
@@ -60,43 +59,22 @@ public class ODataEntityKeyUrlFormatterTests
             Literal(Guid.Parse("3fa85f64-5717-4562-b3fc-2c963f66afa6")));
 
     /// <summary>
-    /// A <see cref="char"/> key is single-quoted by the writer, and since #677
-    /// <see cref="ODataKeyParser"/> strips the quotes back off -- the pair round-trips, so
-    /// <c>char</c> is in the theory below alongside every other shape.
+    /// A <see cref="char"/> key is single-quoted by the writer, doubling nothing -- there's only
+    /// ever one character between the delimiters, quote or not, so <c>'''</c> is the literal for
+    /// the char <c>'</c> itself. Since #677 the pair round-trips (pinned by the theory below,
+    /// which is where the Parse half of this used to live).
     /// </summary>
     [Fact]
-    public void CharKey_IsSingleQuoted_AndRoundTrips()
+    public void CharKey_IsSingleQuoted()
     {
         Assert.Equal("'x'", Literal('x'));
-        Assert.Equal('x', ODataKeyParser.Parse(Literal('x'), typeof(char)));
-    }
-
-    /// <summary>
-    /// The formatter doesn't double an embedded quote inside a char literal the way it does for
-    /// a string -- there's only ever one character between the delimiters, quote or not -- so
-    /// <c>'''</c> (the literal for the char <c>'</c>) still has to parse back to <c>'</c>.
-    /// </summary>
-    [Fact]
-    public void CharKey_ThatIsItselfAQuote_RoundTrips()
-    {
         Assert.Equal("'''", Literal('\''));
-        Assert.Equal('\'', ODataKeyParser.Parse(Literal('\''), typeof(char)));
     }
 
-    /// <summary>
-    /// A bare, unquoted character is the pre-#677 shape -- it never reaches the new quoted
-    /// branch and still falls through to <see cref="TypeDescriptor"/>, exactly as before.
-    /// </summary>
-    [Fact]
-    public void CharKey_UnquotedBareCharacter_StillParses() =>
-        Assert.Equal('x', ODataKeyParser.Parse("x", typeof(char)));
-
-    [Fact]
-    public void CharKey_EmptyOrMultiCharacterQuotedLiteral_FailsCleanly()
-    {
-        Assert.Throws<ODataKeyFormatException>(() => ODataKeyParser.Parse("''", typeof(char)));
-        Assert.Throws<ODataKeyFormatException>(() => ODataKeyParser.Parse("'ab'", typeof(char)));
-    }
+    // CharKey_UnquotedBareCharacter_StillParses and
+    // CharKey_EmptyOrMultiCharacterQuotedLiteral_FailsCleanly moved to ODataKeyParserTests --
+    // both are characterization of ODataKeyParser.Parse alone (they pass with the #677 fix
+    // reverted) rather than tests of the formatter/parser pair this class owns.
 
     /// <summary>
     /// Round-trip ("O") for the two instant types: the parser reads them with
@@ -146,6 +124,12 @@ public class ODataEntityKeyUrlFormatterTests
         new TimeOnly(13, 45, 30),
         'x',
         '\'',
+        // #682: a combining mark (U+0300) right after the opening quote is the case that broke
+        // the culture-sensitive StartsWith("'") delimiter test -- under ICU, "'" + U+0300
+        // collates as one element, so StartsWith("'") returned false and the quotes were never
+        // stripped. One case for each affected branch.
+        '\u0300',
+        "\u0300abc",
     };
 
     /// <summary>
