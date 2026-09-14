@@ -38,16 +38,28 @@ internal static class ODataPropertyNaming
     // Fold-in #7 (#325/#326 review, perf hygiene): FindClrPropertyByEdmName is now called per
     // navigation per entity from BOTH SerializeBounded and OmitUnexpandedNavigations (previously it
     // was mostly a startup/validation-time helper), so its GetProperties()+LINQ+attribute-lookup
-    // cost is now paid on the hot serialization path. Memoized per (type, edmName), matching this
-    // codebase's `s_`-prefixed static-cache convention (e.g. OhDataEndpointFactory's
-    // s_navRefKeyAccessorCache). Keyed on the exact string passed in (ordinal tuple equality) rather
-    // than a case-normalized key: callers overwhelmingly pass the canonical EDM name (navProp.Name),
-    // so this trades a theoretical extra cache entry for a differently-cased caller against not
-    // having to normalize (and risk a culture-sensitive ToUpper/ToLower bug) on every lookup —
-    // correctness (case-INSENSITIVE matching) is unaffected either way since it happens inside the
-    // cached computation, not in the key.
-    private static readonly ConcurrentDictionary<(Type Type, string EdmName), PropertyInfo?>
-        s_clrPropertyByEdmNameCache = new();
+    // cost is now paid on the hot serialization path.
+    //
+    // #537: memoized per TYPE, not per (type, edmName) string pair. The previous cache keyed on the
+    // caller's exact string, on the stated invariant that every caller passes a name already drawn
+    // from the model's own finite vocabulary. That invariant was FALSE for ApplyNavOrderBy: its
+    // IsKnownEdmName gate and its FindClrPropertyByEdmName call were two SEPARATE, un-linked lookups
+    // over the same raw $orderby token, so the gate bounded which PROPERTIES could pass but not which
+    // STRINGS reached the cache as keys — 256 case spellings of one 8-letter property name produced
+    // 256 permanent entries (measured on #537), and a single request could add roughly 870 more (one
+    // per comma-separated clause) before hitting Kestrel's default request-line limit. Capping the
+    // cache the way OpenTypeJsonOptions' sibling is capped was the fallback; this is strictly better,
+    // because keying on the TYPE ALONE removes the client-supplied string from the key entirely — the
+    // key space is now the app's own registered model types, fixed at startup, never request traffic
+    // — for every caller at once, not just the one that broke the invariant. It also removes the
+    // duplicate reflection scan a caller like ApplyNavOrderBy used to pay for asking "is this known"
+    // and "which property is it" as two separate calls (see TryResolveEdmName below).
+    private static readonly ConcurrentDictionary<Type, PropertyInfo[]> s_propertiesCache = new();
+
+    private static PropertyInfo[] GetCandidateProperties(Type type) =>
+        s_propertiesCache.GetOrAdd(type, t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.GetIndexParameters().Length == 0)
+            .ToArray());
 
     /// <summary>
     /// Finds the CLR property of <paramref name="type"/> whose OData/EDM name
@@ -58,18 +70,12 @@ internal static class ODataPropertyNaming
     /// </summary>
     internal static PropertyInfo? FindClrPropertyByEdmName(Type type, string edmName)
     {
-        return s_clrPropertyByEdmNameCache.GetOrAdd((type, edmName), key =>
-        {
-            (Type t, string name) = key;
-            PropertyInfo[] props = t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(p => p.GetIndexParameters().Length == 0)
-                .ToArray();
+        PropertyInfo[] props = GetCandidateProperties(type);
 
-            // Prefer a property whose resolved EDM name matches (covers [JsonPropertyName] renames);
-            // fall back to a caller that already holds a CLR name (e.g. an un-renamed property).
-            return props.FirstOrDefault(p => string.Equals(ResolveEdmName(p), name, StringComparison.OrdinalIgnoreCase))
-                ?? props.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
-        });
+        // Prefer a property whose resolved EDM name matches (covers [JsonPropertyName] renames);
+        // fall back to a caller that already holds a CLR name (e.g. an un-renamed property).
+        return props.FirstOrDefault(p => string.Equals(ResolveEdmName(p), edmName, StringComparison.OrdinalIgnoreCase))
+            ?? props.FirstOrDefault(p => string.Equals(p.Name, edmName, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -81,7 +87,21 @@ internal static class ODataPropertyNaming
     /// exactly as the main <c>$select</c>/<c>$orderby</c> parser rejects it.
     /// </summary>
     internal static bool IsKnownEdmName(Type type, string edmName) =>
-        type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.GetIndexParameters().Length == 0)
-            .Any(p => string.Equals(ResolveEdmName(p), edmName, StringComparison.OrdinalIgnoreCase));
+        GetCandidateProperties(type).Any(p => string.Equals(ResolveEdmName(p), edmName, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// #537: the strict EDM-name match <see cref="IsKnownEdmName"/> performs, but in ONE pass over
+    /// <paramref name="type"/>'s properties, returning the matched property instead of a bool. For a
+    /// caller that needs both "is this a known EDM name" and "which property is it" — the exact shape
+    /// <c>ApplyNavOrderBy</c> had, calling <see cref="IsKnownEdmName"/> then
+    /// <see cref="FindClrPropertyByEdmName"/> over the same string — this replaces two scans (and,
+    /// before #537, two independent cache lookups) with one. Returns <c>false</c>, with
+    /// <paramref name="property"/> <c>null</c>, exactly where <see cref="IsKnownEdmName"/> would.
+    /// </summary>
+    internal static bool TryResolveEdmName(Type type, string edmName, out PropertyInfo? property)
+    {
+        property = GetCandidateProperties(type)
+            .FirstOrDefault(p => string.Equals(ResolveEdmName(p), edmName, StringComparison.OrdinalIgnoreCase));
+        return property is not null;
+    }
 }
