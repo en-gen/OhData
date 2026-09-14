@@ -15,7 +15,7 @@ at all.
 | **Measured** | 2026-09-04 |
 | **Run** | `--filter "*ServerComparisonBenchmarks*"` — the head-to-head suite **alone**, which is what the 1.7.0 control below also ran, and what every historically published figure on this page ran |
 | **Environment** | BenchmarkDotNet v0.15.8 · Windows 11 (10.0.26200.9168/25H2) · AMD Ryzen 9 5950X, 16 physical cores · .NET SDK 10.0.303 · .NET 10.0.11 X64 RyuJIT x86-64-v3 |
-| **Packages** | `Microsoft.AspNetCore.OData` 9.4.x (the same floating range `OhData.AspNetCore` references); OhData from source at that commit |
+| **Packages** | `Microsoft.AspNetCore.OData` 9.5.0, resolved from `Version="*"` — the benchmark floats to the latest stable release deliberately, so the comparison tracks what an adopter would actually install rather than a range OhData pins; OhData from source at that commit |
 | **Gate** | The 16-scenario smoke check passed before measurement — the run aborts otherwise |
 
 ## Summary
