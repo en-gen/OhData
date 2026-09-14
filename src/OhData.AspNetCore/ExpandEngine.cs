@@ -37,7 +37,7 @@ using Microsoft.Net.Http.Headers;
 using Microsoft.OData.Edm;
 using Microsoft.OData.Edm.Csdl;
 using Microsoft.OData.UriParser;
-using static OhData.OhDataEndpointFactory;
+
 
 namespace OhData;
 
@@ -73,7 +73,7 @@ internal static class ExpandEngine
         // a plain GET over a self-referential/bidirectional model with tracked-entity relationship
         // fixup safe: navigations outside the clause are never handed to System.Text.Json at all,
         // so a cycle among them is structurally unreachable.
-        var serializerOptions = jsonOptions ?? _pascalCaseSerializerOptions;
+        var serializerOptions = jsonOptions ?? OhDataEndpointFactory._pascalCaseSerializerOptions;
         SelectExpandClause? rootClauseForSerialize = options.SelectExpand?.SelectExpandClause;
 
         // #466: the RAW substrate's own $levels budget, unioned onto the PUSHED one. BuildExpandLookup
@@ -545,7 +545,7 @@ internal static class ExpandEngine
                     if (keyVal is not null) keys.Add(keyVal);
                 }
 
-                IReadOnlyDictionary<object, object?> map = await AsHandlerFault(navRoute.BatchHandler(keys, ct));
+                IReadOnlyDictionary<object, object?> map = await OhDataEndpointFactory.AsHandlerFault(navRoute.BatchHandler(keys, ct));
                 for (int i = 0; i < items.Count; i++)
                 {
                     // A missing key means "no children" (collection → []) or "no related entity"
@@ -560,7 +560,7 @@ internal static class ExpandEngine
                 for (int i = 0; i < items.Count; i++)
                 {
                     relatedByIndex[i] = keyProp?.GetValue(items[i]) is { } keyVal
-                        ? await AsHandlerFault(navRoute.Handler(keyVal, ct))
+                        ? await OhDataEndpointFactory.AsHandlerFault(navRoute.Handler(keyVal, ct))
                         : (navRoute.IsCollection ? Array.Empty<object>() : null);
                 }
             }
@@ -1364,7 +1364,7 @@ internal static class ExpandEngine
     {
         if (value is null) return null;
 
-        JsonSerializerOptions opts = serializerOptions ?? _pascalCaseSerializerOptions;
+        JsonSerializerOptions opts = serializerOptions ?? OhDataEndpointFactory._pascalCaseSerializerOptions;
 
         if (edmType is null)
         {
@@ -1511,7 +1511,7 @@ internal static class ExpandEngine
         (string Nav, int Remaining)? activeLevels = null,
         bool suppressPolymorphicMetadata = false)
     {
-        JsonSerializerOptions opts = serializerOptions ?? _pascalCaseSerializerOptions;
+        JsonSerializerOptions opts = serializerOptions ?? OhDataEndpointFactory._pascalCaseSerializerOptions;
         if (values.Count == 0) return new JsonArray();
 
         if (edmType is null)
@@ -2021,7 +2021,7 @@ internal static class ExpandEngine
         // A null options argument and _pascalCaseSerializerOptions produce identical answers (the
         // latter's PropertyNamingPolicy is null), so they can safely share one cache entry — the
         // same substitution every other method in this file makes for a null options argument.
-        JsonSerializerOptions optionsKey = serializerOptions ?? _pascalCaseSerializerOptions;
+        JsonSerializerOptions optionsKey = serializerOptions ?? OhDataEndpointFactory._pascalCaseSerializerOptions;
         return s_navJsonKeyCache.GetOrCreateValue(optionsKey).GetOrAdd(
             clrNavProp,
             static (prop, opts) =>

@@ -37,7 +37,7 @@ using Microsoft.Net.Http.Headers;
 using Microsoft.OData.Edm;
 using Microsoft.OData.Edm.Csdl;
 using Microsoft.OData.UriParser;
-using static OhData.ExpandEngine;
+
 
 namespace OhData;
 
@@ -1157,7 +1157,7 @@ internal static class OhDataEndpointFactory
     /// </para>
     /// </remarks>
     private static bool SourceCompilesOnEfCore<TModel>(IQueryable<TModel> source) =>
-        ResolveEfCoreAssembly(source) is not null && CanCompile(source);
+        ExpandEngine.ResolveEfCoreAssembly(source) is not null && CanCompile(source);
 
     /// <summary>
     /// Whether the provider can compile <paramref name="query"/>, established without executing it.
@@ -1437,7 +1437,7 @@ internal static class OhDataEndpointFactory
         // finalises effectiveJsonOptions itself — it keys off that instance. Fills a dictionary only:
         // no JsonTypeInfo is resolved and no modifier is added, so the ignore -> open-type ->
         // nav-suppression ordering invariant is untouched.
-        PrimeNavSuppression(effectiveJsonOptions, registration.EdmModel);
+        ExpandEngine.PrimeNavSuppression(effectiveJsonOptions, registration.EdmModel);
 
         // #389 L1: every per-request open-type path gates on this, NOT on OpenTypesEnabled. The flag
         // says what the consumer asked for; this says whether the model gave it anything to do. Now
@@ -1949,7 +1949,7 @@ internal static class OhDataEndpointFactory
             foreach (IEdmNavigationProperty nav in entityType.NavigationProperties())
             {
                 if (nav.TargetMultiplicity() != EdmMultiplicity.Many) continue;
-                if (ResolveNavTreatment(nav.Name, candidates).Treatment != NavTreatment.ServeRaw) continue;
+                if (ExpandEngine.ResolveNavTreatment(nav.Name, candidates).Treatment != ExpandEngine.NavTreatment.ServeRaw) continue;
 
                 // The two knobs are named in the order they must be set: MaxExpandTop FIRST and alone
                 // is a complete answer (over-ceiling 400s), and ExpandPagingEnabled is inert without
@@ -2128,7 +2128,7 @@ internal static class OhDataEndpointFactory
                     categories.Add(OhDataOperation.Update);
 
                 foreach (IEntitySetEndpointSource target in
-                         ResolveProfilesForEdmType(nav.ToEntityType(), registration))
+                         ExpandEngine.ResolveProfilesForEdmType(nav.ToEntityType(), registration))
                 {
                     // A self-referential navigation, or one into this profile's own entity set,
                     // resolves to this profile: it is governed by its own rule by definition.
@@ -3513,7 +3513,7 @@ internal static class OhDataEndpointFactory
         foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
         {
             count += item.LevelsOption is { } lv
-                ? Math.Max(1, ResolveLevelsBudget(lv.IsMaxLevel, lv.Level, maxExpansionDepth, MaxNestedExpandDepth))
+                ? Math.Max(1, ExpandEngine.ResolveLevelsBudget(lv.IsMaxLevel, lv.Level, maxExpansionDepth, ExpandEngine.MaxNestedExpandDepth))
                 : 1;
             if (count > cap) return count;
 
@@ -3689,13 +3689,13 @@ internal static class OhDataEndpointFactory
         var json = new JsonArray();
         foreach (object item in itemArray)
         {
-            json.Add(SerializeBounded(item, navElementEdmType, edmModel, clause: null, navSerializerOptions));
+            json.Add(ExpandEngine.SerializeBounded(item, navElementEdmType, edmModel, clause: null, navSerializerOptions));
         }
         // #184: navItemType is the CLR element type, so [JsonPropertyName] renames on its
         // navigations are honored when computing which keys to omit. Defence-in-depth (#325/#326):
         // a practical no-op now that SerializeBounded never wrote an un-expanded navigation, kept
         // in case a future caller ever hands this a clause again without checking.
-        OmitUnexpandedNavigations(json, navElementEdmType, clause: null, navItemType, navSerializerOptions);
+        ExpandEngine.OmitUnexpandedNavigations(json, navElementEdmType, clause: null, navItemType, navSerializerOptions);
 
         // Apply $select post-processing for navigation results if requested.
         // We parse the $select query param directly (navigation routes don't go through
@@ -3762,7 +3762,7 @@ internal static class OhDataEndpointFactory
         // CRITICAL deep-insert opt-out (§11.4.2.2): SerializeBounded falls back to the exact
         // pre-#325 whole-graph JsonSerializer.SerializeToNode call in that case, so a deep-insert
         // POST response body keeps its inline nested-create graph exactly as before this fix.
-        var serialized = (JsonObject)SerializeBounded(entity, omitNavsForType, edmModel, clause: null, jsonOptions)!;
+        var serialized = (JsonObject)ExpandEngine.SerializeBounded(entity, omitNavsForType, edmModel, clause: null, jsonOptions)!;
         string baseUrl = BuildBaseUrl(ctx, prefix);
 
         // #176: on single-entity read responses, omit navigation properties that were not
@@ -3773,7 +3773,7 @@ internal static class OhDataEndpointFactory
         // navigations, so omission keys off the same names the serializer just wrote.
         // #325/#326: defence-in-depth (practical no-op now — SerializeBounded already omitted
         // every un-expanded navigation at the point of serialization).
-        OmitUnexpandedNavigations(serialized, omitNavsForType, clause: null, entity.GetType(), jsonOptions);
+        ExpandEngine.OmitUnexpandedNavigations(serialized, omitNavsForType, clause: null, entity.GetType(), jsonOptions);
 
         var node = new JsonObject
         {
@@ -4047,7 +4047,7 @@ internal static class OhDataEndpointFactory
             source.NavigationRoutes.Select(r => r.PropertyName), StringComparer.OrdinalIgnoreCase);
         var pushdownExpandNavs = source.NavigationPropertyNames
             .Where(navName => !routeBackedNavNames.Contains(navName)) // delegate-backed → delegate path only
-            .Select(navName => (navName, binding: BuildExpandNavBinding<TModel>(navName, registration.EdmModel)))
+            .Select(navName => (navName, binding: ExpandEngine.BuildExpandNavBinding<TModel>(navName, registration.EdmModel)))
             .Where(pair => pair.binding is not null)
             .ToDictionary(pair => pair.navName, pair => pair.binding!.Value, StringComparer.OrdinalIgnoreCase);
 
@@ -4055,11 +4055,11 @@ internal static class OhDataEndpointFactory
         // at startup by the shared predicate. Empty on the shipping default (ExpandPagingEnabled is
         // false), which is what makes the route table, $metadata and the three OpenAPI documents
         // byte-identical to a registration that never heard of #313.
-        IReadOnlyList<ExpandPagingNav> expandPagingNavs =
-            ResolveExpandPagingNavigations(source, typeof(TModel), registration);
+        IReadOnlyList<ExpandEngine.ExpandPagingNav> expandPagingNavs =
+            ExpandEngine.ResolveExpandPagingNavigations(source, typeof(TModel), registration);
         // Same set, keyed for the emission site's per-expand lookup. Ordinal-ignore-case to match how
         // every other EDM-name lookup in this file compares identifiers.
-        IReadOnlyDictionary<string, ExpandPagingNav> expandPagingNavsByEdmName =
+        IReadOnlyDictionary<string, ExpandEngine.ExpandPagingNav> expandPagingNavsByEdmName =
             expandPagingNavs.ToDictionary(n => n.EdmName, StringComparer.OrdinalIgnoreCase);
 
         // #418/#463/#464: the ceiling on a raw-served expansion USED TO BE precomputed here, as a
@@ -4587,7 +4587,7 @@ internal static class OhDataEndpointFactory
                         frameworkNextLink = BuildFrameworkSkipLink(ctx, frameworkSkip + ps);
                     }
 
-                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
+                    var (finalItems, selectedProps) = await ExpandEngine.ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -4882,13 +4882,13 @@ internal static class OhDataEndpointFactory
                         source.SelectPushdownEnabled &&
                         pushdownNamesUnambiguous &&
                         options.SelectExpand?.SelectExpandClause is { } selClause &&
-                        ExtractSelectedProperties(selClause) is { } selNames
+                        ExpandEngine.ExtractSelectedProperties(selClause) is { } selNames
                             // #628: the EDM model is passed HERE too, not only on the $expand call
                             // sites below. Without it the polymorphic-root check inside cannot
                             // fire, and a member-init over the declared type erases the runtime
                             // identity @odata.type has to report -- measured: $select=Id on a
                             // polymorphic root emitted no annotation for the derived row.
-                            ? TryApplySelectProjection(q, selNames, source, pushdownCtorOk,
+                            ? ExpandEngine.TryApplySelectProjection(q, selNames, source, pushdownCtorOk,
                                 pushdownStructuralByName, logger, edmModel: registration.EdmModel)
                             : q;
 
@@ -4906,7 +4906,7 @@ internal static class OhDataEndpointFactory
                     // #305: deliberately NOT gated on pushdownCtorOk, unlike ApplySelectPushdown -- this
                     // now feeds the Path A Include fallback when TryApplySelectProjection is ineligible,
                     // so it must be computed regardless of ctor eligibility.
-                    List<EngagedExpand>? engagedExpandNavs = null;
+                    List<ExpandEngine.EngagedExpand>? engagedExpandNavs = null;
                     // #305 fold-in: resolve the EF Core assembly ONCE here (short-circuited exactly like
                     // the old bool-returning IsEfCoreBacked gate it replaces) and reuse it below at the
                     // Path A Include-fallback call site instead of re-walking query.Provider a second time.
@@ -4914,7 +4914,7 @@ internal static class OhDataEndpointFactory
                     if (source.ExpandPushdownEnabled &&
                         pushdownNamesUnambiguous &&
                         options.SelectExpand?.SelectExpandClause is { } expandPlanClause &&
-                        (efAssembly = ResolveEfCoreAssembly(filtered)) is not null)
+                        (efAssembly = ExpandEngine.ResolveEfCoreAssembly(filtered)) is not null)
                     {
                         foreach (ExpandedNavigationSelectItem expandItem in
                                  expandPlanClause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
@@ -4925,11 +4925,11 @@ internal static class OhDataEndpointFactory
                             // pushdownExpandNavs (it is inherently cyclic), but a BOUNDED $levels
                             // projection is cycle-free, so resolve its binding on the fly here — skipping
                             // any delegate-backed nav (routeBackedNavNames) so its delegate is never bypassed.
-                            ExpandNavBinding binding;
+                            ExpandEngine.ExpandNavBinding binding;
                             if (expandItem.LevelsOption is not null)
                             {
                                 if (routeBackedNavNames.Contains(navName)) continue; // delegate-backed → delegate path
-                                if (BuildLevelsNavBinding(typeof(TModel), navName) is not { } lb) continue;
+                                if (ExpandEngine.BuildLevelsNavBinding(typeof(TModel), navName) is not { } lb) continue;
                                 binding = lb;
                             }
                             else if (!pushdownExpandNavs.TryGetValue(navName, out binding))
@@ -4937,10 +4937,10 @@ internal static class OhDataEndpointFactory
                                 continue; // delegate-backed or non-pushable top-level nav → delegate/EDM path
                             }
 
-                            if (TryBuildEngagedExpand(expandItem, binding, registration.EdmModel, registration,
-                                    source.MaxExpansionDepth, out EngagedExpand engaged))
+                            if (ExpandEngine.TryBuildEngagedExpand(expandItem, binding, registration.EdmModel, registration,
+                                    source.MaxExpansionDepth, out ExpandEngine.EngagedExpand engaged))
                             {
-                                (engagedExpandNavs ??= new List<EngagedExpand>()).Add(engaged);
+                                (engagedExpandNavs ??= new List<ExpandEngine.EngagedExpand>()).Add(engaged);
                             }
                             else
                             {
@@ -4968,22 +4968,22 @@ internal static class OhDataEndpointFactory
                     //    down, and windowing it while also projecting a collection out of each element
                     //    is the APPLY/LATERAL shape SQLite cannot translate (#298/#304),
                     //  - not a $levels recursion (same reason, #300),
-                    List<EngagedExpand>? carrierCounted = null;
+                    List<ExpandEngine.EngagedExpand>? carrierCounted = null;
                     if (engagedExpandNavs is { Count: > 0 })
                     {
-                        foreach (EngagedExpand ce in engagedExpandNavs)
+                        foreach (ExpandEngine.EngagedExpand ce in engagedExpandNavs)
                         {
                             if (ce.Levels == 0 && ce.Binding.IsCollection && ce.Count
                                 && ce.Children is not { Count: > 0 }
                                 && (ce.Top is int || (ce.Skip is int cskip && cskip > 0)))
                             {
-                                (carrierCounted ??= new List<EngagedExpand>()).Add(ce);
+                                (carrierCounted ??= new List<ExpandEngine.EngagedExpand>()).Add(ce);
                             }
                         }
                         // More counted+windowed navs than the carrier has slots: fall back wholesale
                         // rather than carrying some counts and deferring others, so one request
                         // never mixes the two count sources.
-                        if (carrierCounted is { Count: > ExpandCountCarrierSlots }) carrierCounted = null;
+                        if (carrierCounted is { Count: > ExpandEngine.ExpandCountCarrierSlots }) carrierCounted = null;
                     }
                     // Index-aligned with `items` below; re-indexed onto the serialized parents at the
                     // ShapePushedExpandsInJson call site.
@@ -5004,7 +5004,7 @@ internal static class OhDataEndpointFactory
                         List<string> structuralNames =
                             source.SelectPushdownEnabled &&
                             options.SelectExpand!.SelectExpandClause is { } combClause &&
-                            ExtractSelectedProperties(combClause) is { } combSelected
+                            ExpandEngine.ExtractSelectedProperties(combClause) is { } combSelected
                                 ? combSelected
                                 : pushdownStructuralByName.Keys.ToList();
 
@@ -5012,9 +5012,9 @@ internal static class OhDataEndpointFactory
                         // nav qualified, or that the root projection is ineligible for a member-init
                         // Select at all — in which case the request falls through to the unchanged
                         // path below (including, ultimately, the #305 Include fallback).
-                        IQueryable<ExpandCountCarrier<TModel>>? carrierQuery =
+                        IQueryable<ExpandEngine.ExpandCountCarrier<TModel>>? carrierQuery =
                             carrierCounted is { Count: > 0 }
-                                ? TryApplyCarrierProjection(
+                                ? ExpandEngine.TryApplyCarrierProjection(
                                     filtered, structuralNames, source, pushdownCtorOk,
                                     pushdownStructuralByName, logger, engagedExpandNavs,
                                     registration.EdmModel, cachedBinderSettings, carrierCounted)
@@ -5025,7 +5025,7 @@ internal static class OhDataEndpointFactory
                         string? projectionIneligibleReason = null;
                         IQueryable<TModel> pushedQuery = carrierQuery is not null
                             ? filtered // unused on the carrier path; keeps the reference check below false
-                            : TryApplySelectProjection(
+                            : ExpandEngine.TryApplySelectProjection(
                                 filtered, structuralNames, source, pushdownCtorOk, pushdownStructuralByName,
                                 logger, engagedExpandNavs, registration.EdmModel, cachedBinderSettings,
                                 r => projectionIneligibleReason = r);
@@ -5037,7 +5037,7 @@ internal static class OhDataEndpointFactory
                                 // #494: only the TRANSLATION of this query is a client-error
                                 // candidate; a fault raised once rows start arriving is the
                                 // server's. See TranslateThenMaterialize.
-                                ExpandCountCarrier<TModel>[] carriers = EvaluateQueryWithArithmeticFaultGuard(
+                                ExpandEngine.ExpandCountCarrier<TModel>[] carriers = EvaluateQueryWithArithmeticFaultGuard(
                                     () => TranslateThenMaterialize(() => carrierQuery), options, logger, source.EntitySetName);
 
                                 // Unwrap IMMEDIATELY: `items` is a plain TModel[] from here on, so
@@ -5090,7 +5090,7 @@ internal static class OhDataEndpointFactory
                             //
                             // #616 narrowed this: a nested $expand is chained with ThenInclude now, so
                             // only $levels reaches the refusal.
-                            if (FindLevelsExpand(engagedExpandNavs) is { } nestedNav)
+                            if (ExpandEngine.FindLevelsExpand(engagedExpandNavs) is { } nestedNav)
                             {
                                 // #322: same correction as the message above — name the check that
                                 // actually failed, not the whole rule.
@@ -5117,7 +5117,7 @@ internal static class OhDataEndpointFactory
                             // element type (#326's two previously-still-500 classes) — is structurally
                             // unreachable. See IncludeFallbackSqliteTests.cs's IncludeFallbackCyclicLeafTests.
 
-                            MethodInfo? efInclude = efAssembly is not null ? ResolveEfIncludeMethod(efAssembly) : null;
+                            MethodInfo? efInclude = efAssembly is not null ? ExpandEngine.ResolveEfIncludeMethod(efAssembly) : null;
                             if (efInclude is null)
                             {
                                 // The outer gate above already resolved efAssembly as non-null to reach
@@ -5140,9 +5140,9 @@ internal static class OhDataEndpointFactory
                                 // TranslateThenMaterialize treats as translation.
                                 items = EvaluateQueryWithArithmeticFaultGuard(
                                     () => TranslateThenMaterialize(() => ApplySelectPushdown(
-                                        ApplyIncludeFallback(
+                                        ExpandEngine.ApplyIncludeFallback(
                                             filtered, engagedExpandNavs, efInclude,
-                                            ResolveEfThenIncludeMethods(efAssembly!), registration.EdmModel,
+                                            ExpandEngine.ResolveEfThenIncludeMethods(efAssembly!), registration.EdmModel,
                                             source.MaxExpandTop, cachedBinderSettings))),
                                     options, logger, source.EntitySetName);
                                 // engagedExpandNavs stays SET (not nulled): the existing
@@ -5236,7 +5236,7 @@ internal static class OhDataEndpointFactory
                     // #206 ($levels): the names of navigations this request actually PUSHED with $levels,
                     // so OmitUnexpandedNavigations keeps their bounded recursion (and ONLY theirs — a
                     // delegate-backed $levels nav is not pushed and must still be stripped beyond depth 1).
-                    HashSet<string>? pushedLevelsNavNames = CollectPushedLevelsNavNames(engagedExpandNavs);
+                    HashSet<string>? pushedLevelsNavNames = ExpandEngine.CollectPushedLevelsNavNames(engagedExpandNavs);
 
                     JsonArray finalItems;
                     List<string>? selectedProps;
@@ -5246,7 +5246,7 @@ internal static class OhDataEndpointFactory
                         // the navigations ShapePushedExpandsInJson bounds (and, where #313 allows,
                         // pages) below — and bounds every OTHER expanded collection in the response,
                         // which on a non-EF source is all of them.
-                        (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct, pushedLevelsNavNames, engagedExpandNavs);
+                        (finalItems, selectedProps) = await ExpandEngine.ApplyCollectionPipelineAsync(items, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct, pushedLevelsNavNames, engagedExpandNavs);
                     }
                     catch (JsonException ex) when (engagedExpandNavs is { Count: > 0 })
                     {
@@ -5295,7 +5295,7 @@ internal static class OhDataEndpointFactory
                         // #334 shares that index-parallel construction for exactly the same reason:
                         // the carrier's counts are positional against `items`, and a count attached
                         // to the WRONG parent is worse than no fix at all.
-                        ExpandPagingContext? pagingCtx = null;
+                        ExpandEngine.ExpandPagingContext? pagingCtx = null;
                         IEnumerable<JsonObject> shapeParents;
                         IReadOnlyDictionary<PropertyInfo, int[]>? shapeCounts = null;
                         PropertyInfo? parentKeyProp = expandPagingNavs.Count > 0
@@ -5325,7 +5325,7 @@ internal static class OhDataEndpointFactory
                                 // nested page — §8.2.8.5 scopes the preference to "each collection
                                 // within the response", not to the top-level one — clamped down to
                                 // MaxExpandTop at the emission site, never up.
-                                pagingCtx = new ExpandPagingContext(
+                                pagingCtx = new ExpandEngine.ExpandPagingContext(
                                     baseUrl, name, parentKeyProp, pagingItems, expandPagingNavsByEdmName,
                                     preferredPageSize);
                             }
@@ -5346,7 +5346,7 @@ internal static class OhDataEndpointFactory
                             shapeParents = finalItems.OfType<JsonObject>();
                         }
 
-                        ShapePushedExpandsInJson(
+                        ExpandEngine.ShapePushedExpandsInJson(
                             shapeParents, engagedExpandNavs, jsonOptions ?? _pascalCaseSerializerOptions,
                             source.MaxExpandTop, pagingCtx, shapeCounts);
                     }
@@ -5526,7 +5526,7 @@ internal static class OhDataEndpointFactory
                         object[] searchItems = searchResults.ToArray();
                         var (pagedSearchItems, searchPreTotal, searchNextLink) = ApplyGetAllPaging(searchItems);
 
-                        var (searchFinal, searchSelectedProps) = await ApplyCollectionPipelineAsync(pagedSearchItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
+                        var (searchFinal, searchSelectedProps) = await ExpandEngine.ApplyCollectionPipelineAsync(pagedSearchItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
                         string searchBaseUrl = BuildBaseUrl(ctx, prefix);
                         var searchEnvelope = new Dictionary<string, object?>();
                         searchEnvelope["@odata.context"] = $"{searchBaseUrl}/$metadata#{AppendSelectSuffix(name, searchSelectedProps)}";
@@ -5545,7 +5545,7 @@ internal static class OhDataEndpointFactory
                     var rawItems = enumerable.ToArray();
                     var (pagedItems, preTotal, nextLink) = ApplyGetAllPaging(rawItems);
 
-                    var (finalItems, selectedProps) = await ApplyCollectionPipelineAsync(pagedItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
+                    var (finalItems, selectedProps) = await ExpandEngine.ApplyCollectionPipelineAsync(pagedItems, options, source, s, jsonOptions, rootEdmType, registration, ctx.RequestServices, ct);
 
                     string baseUrl = BuildBaseUrl(ctx, prefix);
                     var envelope = new Dictionary<string, object?>();
@@ -5788,7 +5788,7 @@ internal static class OhDataEndpointFactory
                             options.SelectExpand?.SelectExpandClause, source.MaxExpandBreadth, source.MaxExpansionDepth);
                         if (breadthError is not null) return breadthError;
                         selectedProps = options.SelectExpand?.SelectExpandClause is not null
-                            ? ExtractSelectedProperties(options.SelectExpand.SelectExpandClause)
+                            ? ExpandEngine.ExtractSelectedProperties(options.SelectExpand.SelectExpandClause)
                             : null;
                     }
 
@@ -5838,7 +5838,7 @@ internal static class OhDataEndpointFactory
                             // remediation message. The ceiling itself now runs INSIDE the pipeline
                             // (Stage 3.6), at every level of the $expand tree — #418's own depth-1
                             // pass on this route is what #463 found the hole in.
-                            await ApplyCollectionPipelineAsync(
+                            await ExpandEngine.ApplyCollectionPipelineAsync(
                                 new[] { result }, options, source, s, jsonOptions, rootEdmType,
                                 registration, ctx.RequestServices, ct, singleEntityRead: true);
                         var entityBody = (JsonObject)expandedItems[0]!;
@@ -6716,7 +6716,7 @@ internal static class OhDataEndpointFactory
         // was emitted for an expand that had no nested options at all, so the continuation of it
         // cannot need any either. Extracting the ~520-line collection-route body here would be the
         // mistake that killed the previous design.
-        foreach (ExpandPagingNav pagingNav in expandPagingNavs)
+        foreach (ExpandEngine.ExpandPagingNav pagingNav in expandPagingNavs)
         {
             // Startup route-collision validation, in the shared GET /{name}({key})/{segment} space.
             //
@@ -6791,7 +6791,7 @@ internal static class OhDataEndpointFactory
                 Expression.Property(contChildParam, pagingNav.ChildKeyProperty),
                 contChildParam);
 
-            MethodInfo contPageMethod = _continuationPageMethod
+            MethodInfo contPageMethod = ExpandEngine._continuationPageMethod
                 .MakeGenericMethod(typeof(TModel), pagingNav.ElementType, contChildKeyType);
             ParameterExpression contQParam = Expression.Parameter(typeof(IQueryable<TModel>), "q");
             ParameterExpression contSkipParam = Expression.Parameter(typeof(int), "skip");
@@ -6814,8 +6814,8 @@ internal static class OhDataEndpointFactory
             // The parent-key CLR property, resolved exactly as ExpandLevelAsync resolves it.
             PropertyInfo? contParentKeyProp = typeof(TModel).GetProperty(
                 source.KeyPropertyName, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
-            FieldInfo contKeyBoxField = typeof(ContinuationKeyBox<TKey>)
-                .GetField(nameof(ContinuationKeyBox<TKey>.Value))!;
+            FieldInfo contKeyBoxField = typeof(ExpandEngine.ContinuationKeyBox<TKey>)
+                .GetField(nameof(ExpandEngine.ContinuationKeyBox<TKey>.Value))!;
 
             var contRb = entityAuthGroup.MapGet($"/{name}({{key}})/{contNavName}",
                 async (string key, HttpContext ctx, CancellationToken ct) =>
@@ -6867,7 +6867,7 @@ internal static class OhDataEndpointFactory
                         // closure produces, so EF Core's parameter extraction turns it into a query
                         // PARAMETER instead of baking the literal into the SQL (which would defeat the
                         // provider's plan cache on a route designed to be called repeatedly).
-                        var contKeyBox = new ContinuationKeyBox<TKey> { Value = (TKey)parsedKey! };
+                        var contKeyBox = new ExpandEngine.ContinuationKeyBox<TKey> { Value = (TKey)parsedKey! };
                         var contKeyPredicate = Expression.Lambda<Func<TModel, bool>>(
                             Expression.Equal(
                                 Expression.Property(contParentParam, contParentKeyProp!),
@@ -6910,7 +6910,7 @@ internal static class OhDataEndpointFactory
                         var contJson = new JsonArray();
                         foreach (object contItem in contRows)
                         {
-                            contJson.Add(SerializeBounded(
+                            contJson.Add(ExpandEngine.SerializeBounded(
                                 contItem, contElementEdmType, registration.EdmModel, clause: null,
                                 jsonOptions ?? _pascalCaseSerializerOptions));
                         }
@@ -8528,14 +8528,14 @@ internal static class OhDataEndpointFactory
             var json = new JsonArray();
             foreach (object item in coll)
             {
-                json.Add(SerializeBounded(item, rootEdmType, edmModel, clause: null, serializerOptions));
+                json.Add(ExpandEngine.SerializeBounded(item, rootEdmType, edmModel, clause: null, serializerOptions));
             }
             if (source.HasETag)
             {
-                InjectETagsIntoJsonArray(json, coll, source);
+                ExpandEngine.InjectETagsIntoJsonArray(json, coll, source);
             }
             // Defence-in-depth (#325/#326): practical no-op now.
-            OmitUnexpandedNavigations(json, rootEdmType, clause: null, modelType, serializerOptions);
+            ExpandEngine.OmitUnexpandedNavigations(json, rootEdmType, clause: null, modelType, serializerOptions);
 
             // #495: rendered here rather than deferred to Results.Ok. The JsonArray above is
             // already materialized, but the envelope AROUND it was not: it is a
