@@ -229,12 +229,19 @@ Key points:
   fetch the entity for the check, so `.RequireResource()` on any route carrying a `{key}` segment
   **requires a `GetById` handler** (enforced at startup). That is Read/Update/Delete, and also
   `Create` when the profile registers a navigation-`post` route (`POST /{Set}({key})/{Nav}`) and
-  `Invoke` when it registers an entity-bound function or action — those two used to pass startup and
-  then fail every request with a 500. The two collection-level members of those categories
-  need no `GetById` and are unaffected: the collection `POST` evaluates its `Create` requirement
-  against the deserialized model directly, and a collection-bound operation's route has no key to
-  load by. Not compatible with `AllowUpsert` create-on-`PUT` (a missing entity returns `404` before
-  the handler runs).
+  `Invoke` when it registers an entity-bound function or action. The collection `POST` needs no
+  `GetById`: it evaluates its `Create` requirement against the deserialized model directly. Not
+  compatible with `AllowUpsert` create-on-`PUT` (a missing entity returns `404` before the handler
+  runs).
+- **A rule that reaches no keyed route is refused at startup** (`InvalidOperationException` from
+  `MapOhData()`). A collection-bound function or action is mapped as `/{Set}/{Name}` and carries no
+  `{key}` segment, so there is no entity to evaluate the requirement against: an
+  `Invoke(...)`/`Invoke("Name", ...)` rule whose only routes are collection-bound operations would
+  drop the requirement silently and leave the route with whatever coarse requirements it carries — no
+  requirement at all, when it carries none. Declare the operation with
+  `BindEntityFunction`/`BindEntityAction` so it has a key to authorize against, or use the coarse
+  requirements for it. A rule that *also* reaches a keyed route stays legal: a generic `Invoke(...)`
+  beside an entity-bound operation, or any rule covering `Read`/`Create`/`Update`/`Delete`.
 
 ### Fallback
 

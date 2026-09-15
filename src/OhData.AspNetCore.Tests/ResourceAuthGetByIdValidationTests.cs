@@ -79,17 +79,20 @@ public class ResourceAuthGetByIdValidationTests
     }
 
     /// <summary>
-    /// Control. A COLLECTION-level bound operation is not key-based either, so Invoke +
-    /// RequireResource without GetById is legal when no entity-bound operation exists.
+    /// A COLLECTION-level bound operation is not key-based either, so this guard has nothing to ask
+    /// of it — but the configuration is refused all the same, by #690: the rule reaches no keyed
+    /// route, so the requirement could never be evaluated. The message has to be #690's and not this
+    /// guard's, which is what still proves the guard keys off the routes that attach the filter.
     /// </summary>
     [Fact]
-    public async Task ResourceInvoke_OnCollectionLevelOperationsOnly_WithoutGetById_StillStarts()
+    public async Task ResourceInvoke_OnCollectionLevelOperationsOnly_IsRefusedByTheKeylessRuleCheck()
     {
-        await using TestFixture fx = await ResourceAuthTestHost.BuildAsync(
-            o => o.AddEntitySetProfile<RagCollectionInvokeNoGetByIdProfile>());
+        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await ResourceAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<RagCollectionInvokeNoGetByIdProfile>()));
 
-        using HttpResponseMessage metadata = await fx.Client.GetAsync("/odata/$metadata");
-        Assert.Equal(HttpStatusCode.OK, metadata.StatusCode);
+        Assert.Contains("RagCollectionInvoke", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("no route carrying a key", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetById", ex.Message, StringComparison.Ordinal);
     }
 
     /// <summary>Control: the same two shapes WITH a GetById handler are exactly what the feature is
@@ -170,7 +173,7 @@ internal sealed class RagCollectionCreateNoGetByIdProfile : EntitySetProfile<int
     }
 }
 
-/// <summary>Control: Invoke + RequireResource with only collection-level operations, no GetById.</summary>
+/// <summary>Invoke + RequireResource reaching only collection-level operations (#690).</summary>
 internal sealed class RagCollectionInvokeNoGetByIdProfile : EntitySetProfile<int, RagParent>
 {
     public RagCollectionInvokeNoGetByIdProfile() : base(x => x.Id)
