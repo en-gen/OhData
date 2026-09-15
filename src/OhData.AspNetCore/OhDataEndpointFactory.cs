@@ -4409,16 +4409,13 @@ internal static class OhDataEndpointFactory
             }
         }
 
-        // #690: AttachResourceFilter evaluates a Resource requirement against the entity loaded from
-        // the route's {key} segment, so a rule whose only routes are COLLECTION-bound operations
-        // (mapped as /{Set}/{Name}, no key) can never be evaluated -- the requirement is dropped and
-        // the route keeps only the rule's coarse requirements, which with none at all is anonymous.
-        // Refused rather than warned, exactly as #487 refuses the same shape on an unbound operation.
+        // #690: a Resource requirement is evaluated against the entity loaded from the route's {key}
+        // segment, and a collection-bound operation is mapped as /{Set}/{Name} with no key, so a rule
+        // that reaches only those can never be evaluated and the route falls back to whatever coarse
+        // requirements the rule carries -- with none, anonymous.
         //
-        // The test is "has this rule any key-based route to apply to", never the requirement kind:
-        // a generic Invoke(...) covers both binding levels, and a rule reaching Read/Update/Delete/
-        // Create is honoured on those categories' keyed routes (the #486 guard above has already
-        // refused the GetById-less ones) and on the collection POST, which evaluates Create inline.
+        // The test is the rule's REACH, never the requirement kind: a generic Invoke(...) covers both
+        // binding levels, and a rule reaching a keyed category is honoured there.
         if (operationAuthRules is not null)
         {
             BoundOperationDefinition[] boundOps = source.BoundFunctions.Concat(source.BoundActions).ToArray();
