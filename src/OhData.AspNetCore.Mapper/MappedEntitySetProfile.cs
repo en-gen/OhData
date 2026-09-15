@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
@@ -234,19 +235,38 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
 
     // ── Navigations ───────────────────────────────────────────────────────────────────────────────
 
+    private delegate void NavigationRegistrar(
+        MappedEntitySetProfile<TKey, TModel, TEntity> profile, ModelMemberBinding binding);
+
+    // Static on a generic type, so each closed profile gets its own. A registrar is a pure function
+    // of the element model type -- nothing a request or a declaration can influence -- so unlike the
+    // map itself it is memoisable, and the profile arrives as the delegate's first argument rather
+    // than captured.
+    private static readonly ConcurrentDictionary<Type, NavigationRegistrar> s_collectionRegistrars = new();
+    private static readonly ConcurrentDictionary<Type, NavigationRegistrar> s_referenceRegistrars = new();
+
+    private static readonly MethodInfo s_registerCollection = Registrar(nameof(RegisterCollectionNavigation));
+    private static readonly MethodInfo s_registerReference = Registrar(nameof(RegisterReferenceNavigation));
+
+    private static MethodInfo Registrar(string name) =>
+        typeof(MappedEntitySetProfile<TKey, TModel, TEntity>)
+            .GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!;
+
     private void RegisterNavigations()
     {
         foreach (ModelMemberBinding binding in _map!.Navigations)
         {
-            MethodInfo register = typeof(MappedEntitySetProfile<TKey, TModel, TEntity>)
-                .GetMethod(
-                    binding.Kind == ModelBindingKind.Collection
-                        ? nameof(RegisterCollectionNavigation)
-                        : nameof(RegisterReferenceNavigation),
-                    BindingFlags.Instance | BindingFlags.NonPublic)!
-                .MakeGenericMethod(binding.ElementModelType!);
+            bool collection = binding.Kind == ModelBindingKind.Collection;
 
-            register.Invoke(this, new object[] { binding });
+            NavigationRegistrar register =
+                (collection ? s_collectionRegistrars : s_referenceRegistrars).GetOrAdd(
+                    binding.ElementModelType!,
+                    static (elementModelType, open) => open
+                        .MakeGenericMethod(elementModelType)
+                        .CreateDelegate<NavigationRegistrar>(),
+                    collection ? s_registerCollection : s_registerReference);
+
+            register(this, binding);
         }
     }
 
