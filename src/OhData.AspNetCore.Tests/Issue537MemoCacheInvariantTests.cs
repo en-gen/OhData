@@ -46,7 +46,7 @@ public class Issue537MemoCacheInvariantTests
             "/odata/NavOrderByParents(1)/Children?$orderby=Category");
         Assert.Equal(HttpStatusCode.OK, warm.StatusCode);
 
-        int before = TotalCacheEntryCount();
+        int before = CacheEntryCountFor(typeof(NavOrderChild));
 
         string[] spellings = AllCaseSpellings("Category").ToArray();
         Assert.Equal(256, spellings.Length); // 2^8 — sanity check against the issue's own measurement
@@ -56,15 +56,12 @@ public class Issue537MemoCacheInvariantTests
             $"/odata/NavOrderByParents(1)/Children?$orderby={Uri.EscapeDataString(orderBy)}");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        int after = TotalCacheEntryCount();
+        int after = CacheEntryCountFor(typeof(NavOrderChild));
 
-        // Pre-#537 this delta was 256 (one new (Type, string) entry per case spelling — reproduced by
-        // temporarily reverting ODataPropertyNaming.cs; see the PR description for the exact number).
-        // Post-#537 the cache is keyed by Type alone, so 256 differently cased requests for one
-        // property can add at most the handful of entries a single request legitimately touches —
-        // never one per spelling.
-        Assert.True(after - before <= 5,
-            $"expected at most a handful of new cache entries, got {after - before} (before={before}, after={after})");
+        // Keyed by Type, so every spelling resolves to the one entry the warm-up already made.
+        // Ablated against the pre-fix (Type, string) key this is 256.
+        Assert.Equal(before, after);
+        Assert.Equal(1, after);
     }
 
     /// <summary>
@@ -109,10 +106,15 @@ public class Issue537MemoCacheInvariantTests
     /// <c>ODataPropertyNaming</c>. Deliberately does not name a field, so this stays meaningful
     /// whatever the cache is keyed by.
     /// </summary>
-    private static int TotalCacheEntryCount()
+    /// <summary>
+    /// Entries keyed by <paramref name="forType"/> across every cache in <c>ODataPropertyNaming</c>.
+    /// Scoped to one type rather than totalled: the caches are process-wide statics and xUnit runs
+    /// test classes in parallel, so a total is a shared counter other classes move underneath it.
+    /// </summary>
+    private static int CacheEntryCountFor(Type forType)
     {
         Type naming = typeof(OhDataRegistration).Assembly.GetType("OhData.ODataPropertyNaming")!;
-        int total = 0;
+        int count = 0;
         foreach (FieldInfo field in naming.GetFields(BindingFlags.NonPublic | BindingFlags.Static))
         {
             if (!field.FieldType.IsGenericType
@@ -121,9 +123,18 @@ public class Issue537MemoCacheInvariantTests
                 continue;
             }
             if (field.GetValue(null) is not IEnumerable cache) continue;
-            foreach (object? _ in cache) total++;
+
+            foreach (object? entry in cache)
+            {
+                object? key = entry?.GetType().GetProperty("Key")?.GetValue(entry);
+
+                // Keyed by Type after #537; the pre-fix shape was a (Type, string) tuple, so the
+                // ablation this test is run under still resolves.
+                if (key is Type t && t == forType) { count++; continue; }
+                if (key is not null && key.GetType().GetField("Item1")?.GetValue(key) is Type t1 && t1 == forType) count++;
+            }
         }
-        return total;
+        return count;
     }
 
     /// <summary>

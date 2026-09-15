@@ -3649,12 +3649,6 @@ internal static class OhDataEndpointFactory
 
             // #253: $orderby names are OData names — resolve to the CLR property by EDM name (honors
             // [JsonPropertyName]) and reject the renamed property's CLR name exactly as the main path.
-            // #537: a single TryResolveEdmName call replaces what used to be an IsKnownEdmName gate
-            // followed by a separate FindClrPropertyByEdmName lookup over the same raw token — besides
-            // costing a duplicate scan, that split fed the raw, unnormalized token into a cache keyed
-            // on the caller's exact string, which is what let 256 case spellings of one property name
-            // grow 256 permanent entries. TryResolveEdmName's cache is keyed by Type alone (see
-            // ODataPropertyNaming), so there is no longer a client-supplied string anywhere in a key.
             PropertyInfo? prop = null;
             if (navItemType is not null && !ODataPropertyNaming.TryResolveEdmName(navItemType, propName, out prop))
             {
