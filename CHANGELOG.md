@@ -739,6 +739,52 @@ status codes or headers.
   (ablation: reverting the fix leaves 256) — alongside the pre-existing rejected-name coverage. The
   count is scoped to that type rather than totalled, because the caches are process-wide statics and
   xUnit runs test classes in parallel.
+- **A mapped profile resolves its navigation registrars once per process, not once per request
+  (#668).** `UseMap(...)` runs in the profile constructor and profiles are `AddScoped`, so every
+  step it takes is a per-request step. One of them was pure reflection over types:
+  `RegisterNavigations` did a `GetMethod` + `MakeGenericMethod` + `MethodInfo.Invoke` for each
+  declared navigation. It is memoised now, in a `ConcurrentDictionary` of open-instance delegates
+  keyed by the element model type and held on the closed profile type's own statics -- so the
+  profile reaches the registrar as an argument rather than being captured by it, which is what
+  keeps a scoped dependency out of a process-lifetime delegate. Two smaller allocations go with it:
+  `ModelMapValidator` builds a `ModelToEntityRewriter` only for a map that actually declares a
+  `Format`, and builds a navigation error's prefix only when there is an error to prefix.
+
+  **Measured** (BenchmarkDotNet, Release, .NET 10.0.12, at `4d9ab5a`, over the repo's own
+  `Product`/`ProductDto` fixture -- three navigations, every binding kind), each pair in one
+  process because the machine drifts too much between runs to compare across them:
+
+  | | before | after |
+  |---|---|---|
+  | navigation registration (x3) | 636.5 ns / 696 B | 22.7 ns / 0 B |
+  | `Format` decomposition check | 1,567.5 ns / 3,256 B | 1,239.9 ns / 2,424 B |
+  | navigation error prefix | 270.9 ns / 568 B | 142.6 ns / 384 B |
+
+  **1,070 ns and 1,712 B off a construction that measures 52.4-55.3 us and ~39 KB** -- so about 2%
+  of the time and 4% of the allocation, on a profile construction that is itself roughly a fifth of
+  a small read (#483 measures a non-capturing `GET /Set(key)` at 0.20-0.26 ms/req).
+
+  **The map and its validation are deliberately still built per request, and the second of those was
+  a measurement rather than a judgement.** The obvious cache -- keyed by the profile's concrete type
+  -- assumes the map is a pure function of that type, which holds only while no adopter branches on
+  injected state inside `UseMap`; a profile that builds a per-tenant map would be served another
+  tenant's verdict, which is #483's hazard and far worse than the cost. The safe version keys on the
+  type **plus** a fingerprint of the bindings actually produced. Built and measured: an exact
+  fingerprint costs **3,128 ns against the 3,856 ns validation it skips**, netting 728 ns -- 1.4% of
+  a construction. It is only cheap (779 ns) if it drops the one input that is not structural, the
+  `Format` binding's expression text, and that is precisely the input `RequireDecomposableFormats`
+  reads -- for a **nested** map the only startup check there is, since the root map's `Format` is
+  re-decomposed by `ModelProjection.BuildLambda` either way. So the cheap form would be a second,
+  independently-derived model of what the validator reads, silently stale the day a check is added.
+  Not worth 1.4%.
+
+  The phase that dominates is not cacheable at all: **building the maps is 43% of a construction**
+  (23,715 ns of 55,270 ns), and it is the adopter's own `Property(...).From(...)` expression-tree
+  literals -- the very thing that may legitimately vary per request. The rest, measured the same
+  way: the projection lambda 8.0%, validation 7.7%, `HasMany`/`HasOptional` 5.1%, `Ignore()` 3.2%,
+  the navigation reflection this entry removes 2.5%, the key-selector rewrite 1.7%, the base
+  constructor 1.2%. Allocation accounts for 97% of the whole (39,112 B of 40,289 B), so no large
+  phase is hiding.
 
 - **A `char` entity key now round-trips through the URL the server itself emits, under any culture
   (#677, #682).** `ODataEntityKeyUrlFormatter` has always single-quoted a `char` key, but

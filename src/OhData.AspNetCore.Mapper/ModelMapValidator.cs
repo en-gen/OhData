@@ -54,8 +54,6 @@ public static class ModelMapValidator
 
         foreach (ModelMemberBinding binding in map.Navigations)
         {
-            string where = $"'{map.ModelType.Name}.{binding.ModelMember.Name}'";
-
             // ElementModelType is never null for a navigation: every declaration path that produces
             // one -- Reference, Element and AsIs -- sets it from a type parameter.
             Type elementModelType = binding.ElementModelType!;
@@ -63,8 +61,8 @@ public static class ModelMapValidator
             if (target is null)
             {
                 errors.Add(
-                    $"{where} maps to model type '{elementModelType.Name}', which has no map. " +
-                    $"Declare one with Nested<{binding.ElementEntityType?.Name ?? "TEntity"}, " +
+                    $"{Where(map, binding)} maps to model type '{elementModelType.Name}', which has " +
+                    $"no map. Declare one with Nested<{binding.ElementEntityType?.Name ?? "TEntity"}, " +
                     $"{elementModelType.Name}>(...).");
                 continue;
             }
@@ -72,14 +70,18 @@ public static class ModelMapValidator
             if (target.EntityType != binding.ElementEntityType)
             {
                 errors.Add(
-                    $"{where} reaches entity '{binding.ElementEntityType?.Name}' but the map for " +
-                    $"'{elementModelType.Name}' is declared from '{target.EntityType.Name}'.");
+                    $"{Where(map, binding)} reaches entity '{binding.ElementEntityType?.Name}' but " +
+                    $"the map for '{elementModelType.Name}' is declared from " +
+                    $"'{target.EntityType.Name}'.");
                 continue;
             }
 
             Validate(target, registry, errors, seen);
         }
     }
+
+    private static string Where(ModelMap map, ModelMemberBinding binding) =>
+        $"'{map.ModelType.Name}.{binding.ModelMember.Name}'";
 
     private static void RequireParameterlessConstructor(ModelMap map, List<string> errors)
     {
@@ -128,14 +130,18 @@ public static class ModelMapValidator
     /// </remarks>
     private static void RequireDecomposableFormats(ModelMap map, ModelMapRegistry registry, List<string> errors)
     {
-        var rewriter = new ModelToEntityRewriter(map, registry);
-        ParameterExpression entity = Expression.Parameter(map.EntityType, "e");
+        ModelToEntityRewriter? rewriter = null;
 
-        foreach (ModelMemberBinding binding in map.Bindings.Where(b => b.Kind == ModelBindingKind.Format))
+        foreach (ModelMemberBinding binding in map.Bindings)
         {
+            if (binding.Kind != ModelBindingKind.Format) continue;
+
+            // Built on the first Format binding, so a map declaring none allocates no rewriter.
+            rewriter ??= new ModelToEntityRewriter(map, registry);
+
             try
             {
-                rewriter.BindingFor(binding, entity);
+                rewriter.BindingFor(binding, rewriter.EntityParameter);
             }
             catch (InvalidOperationException ex)
             {
