@@ -997,61 +997,6 @@ internal static class OhDataEndpointFactory
             : queryable.Provider.CreateQuery<TModel>(rewritten);
     }
 
-    /// <summary>
-    /// Evaluates <paramref name="materialize"/> — an enumeration (<c>ToArray</c>) or
-    /// <c>LongCount</c> of the $filter/$orderby-ApplyTo'd query for the current request — and
-    /// converts a <see cref="DivideByZeroException"/>/<see cref="OverflowException"/> raised
-    /// DURING that specific call into a <see cref="QueryOptionGate.FilterArithmeticFaultException"/> the calling
-    /// route's own catch clause turns into 400 InvalidQueryOption.
-    /// <para>
-    /// Scope (adversarial review R2, HIGH — "narrow the try"): callers must wrap ONLY the
-    /// materialization call itself, never handler invocation, <c>ApplyCollectionPipelineAsync</c>
-    /// (nav delegates, batch handlers, ETag computation), or JSON serialization. An arithmetic
-    /// fault raised from any of those is a genuine server bug, not a client input problem, and
-    /// must reach the group-level exception filter (logged, 500) like any other unexpected
-    /// exception — never be relabeled 400 just because it happens to share an exception type with
-    /// a bad $filter.
-    /// </para>
-    /// <para>
-    /// Guard (same review, same finding): only engages when <paramref name="options"/> actually
-    /// carries a $filter or $orderby. Without either, no client-supplied expression could be the
-    /// cause of a fault raised while enumerating this query — e.g. a profile's own
-    /// <c>GetQueryable</c> Select projection dividing by zero is enumerated at this exact call
-    /// site with NO $filter in the request, and must 500 (a genuine handler bug), not 400. When
-    /// the guard doesn't match, the exception is left alone and propagates normally.
-    /// </para>
-    /// <para>
-    /// Provider note: this only ever engages when the .NET runtime itself raises the exception —
-    /// LINQ-to-Objects and EF Core's InMemory provider evaluate arithmetic client-side. A real
-    /// relational provider (SQL Server, PostgreSQL, SQLite) may instead defer the fault into the
-    /// database (raising a <c>DbException</c> subclass, or in SQLite's case treating division by
-    /// zero as NULL and returning zero matching rows) — neither is caught here. That gap is
-    /// tracked separately; see #358's follow-up issue for a provider-independent fix.
-    /// </para>
-    /// </summary>
-    internal static T EvaluateQueryWithArithmeticFaultGuard<TModel, T>(
-        Func<T> materialize, ODataQueryOptions<TModel> options, ILogger? logger, string entitySetName)
-    {
-        bool hasFilter = options.Filter is not null;
-        bool hasOrderBy = options.OrderBy is not null;
-        try
-        {
-            return materialize();
-        }
-        catch (Exception ex) when ((ex is DivideByZeroException or OverflowException) && (hasFilter || hasOrderBy))
-        {
-            logger?.LogDebug(ex,
-                "OhData: arithmetic fault evaluating $filter/$orderby for {EntitySet}.", entitySetName);
-            string option = (hasFilter, hasOrderBy) switch
-            {
-                (true, true) => "$filter or $orderby expression",
-                (true, false) => "$filter expression",
-                _ => "$orderby expression",
-            };
-            throw new QueryOptionGate.FilterArithmeticFaultException($"The {option} could not be evaluated: {ex.Message}");
-        }
-    }
-
     // #241: reports whether the result order is already established by a top-level ordering operator,
     // so the stabilizing key order below never overrides a profile that pre-orders its own IQueryable.
     // Walks only the outer method-call spine (following the source argument) — an OrderBy buried inside
@@ -2733,58 +2678,6 @@ internal static class OhDataEndpointFactory
         options.SelectExpand?.Validate(settings);
     }
 
-    // #402: the try scope is EXACTLY the construction and the catch is deliberately broad. Every
-    // failure inside it is a statement about the request URL, so 400 is right for the whole set --
-    // and the scope had to be tightened first, because the old whole-handler try also contains
-    // InvokeGetQueryableAsync, where a broad catch would relabel a database outage as a 400.
-    //
-    // Do NOT replace this with a type list. `$skiptoken=` throws ArgumentException from
-    // SkipTokenQueryOption's ctor, not ODataException, and the throw set of somebody else's
-    // constructors is not ours to enumerate. ODataException keeps its message pass-through so the
-    // empty-value cases stay byte-identical; anything else is generic + logged at Warning.
-    //
-    // #426: the ODataQueryContext is built HERE, per request, and this takes the IEdmModel rather
-    // than a context so no caller can hand it a shared one. ODataQueryOptions' constructor WRITES
-    // context.RequestContainer/Request and Initialize reads Request back off that field, so a shared
-    // context races and a valid request intermittently 400s. Measured 16-89 failures per 32,000
-    // constructions across 16 threads sharing one; 0 with a fresh one.
-    //
-    // The (IEdmModel, IEdmType, ODataPath) overload is not a cheap alternative -- it leaves
-    // ElementClrType null, which ODataQueryOptions<TEntity> throws on.
-    // #385: a literal zero divisor is refused BEFORE the query executes, so every provider gives the
-    // same answer. #358 catches DivideByZeroException/OverflowException, which only fires where the
-    // CLR evaluates the expression -- measured, the same URL split three ways: LINQ-to-Objects and
-    // EF InMemory raised and answered 400, SQLite evaluated x/0 to NULL and answered 200 with zero
-    // rows, and SQL Server (Msg 8134) and PostgreSQL (SQLSTATE 22012) raised DbException subclasses
-    // that reached the group filter as an unhandled 500 -- an anonymous client could drive those at
-    // will on the two databases most deployments use.
-    //
-    // Catching DbException instead was rejected: it is not portable, and it would also catch a
-    // connection dropped mid-enumeration and report it as a client error, which is #494's defect.
-    // An AST walk is provider-independent, costs no execution, and is honest -- X div 0 is
-    // unevaluable on every backend, so 400 is right everywhere. SQLite's empty 200 was a wrong
-    // answer under a success status, of the same family as #353/#354.
-    //
-    // Scope is the LITERAL divisor only. `A div B` where some row's B is 0 stays provider-dependent
-    // and is still covered by #358's runtime guard where the CLR evaluates it.
-    private static string? FindLiteralZeroDivisor<TModel>(ODataQueryOptions<TModel> options)
-    {
-        if (options.Filter?.FilterClause?.Expression is { } filter && QueryOptionGate.DividesByLiteralZero(filter))
-        {
-            return "$filter";
-        }
-
-        for (OrderByClause? clause = options.OrderBy?.OrderByClause; clause is not null; clause = clause.ThenBy)
-        {
-            if (clause.Expression is { } expression && QueryOptionGate.DividesByLiteralZero(expression))
-            {
-                return "$orderby";
-            }
-        }
-
-        return null;
-    }
-
     private static bool TryBuildQueryOptions<TModel>(
         IEdmModel model, HttpContext ctx, ILogger? logger,
         [NotNullWhen(true)] out ODataQueryOptions<TModel>? options,
@@ -3764,7 +3657,7 @@ internal static class OhDataEndpointFactory
 
                     // #385: refuse a literal zero divisor BEFORE execution, so every provider gives
                     // the same answer instead of three (400 / 200-empty / 500).
-                    if (FindLiteralZeroDivisor(options) is { } zeroDivisorOption)
+                    if (QueryOptionGate.FindLiteralZeroDivisor(options) is { } zeroDivisorOption)
                     {
                         return ODataError(400, "InvalidQueryOption",
                             $"The {zeroDivisorOption} expression divides by the literal 0, which cannot " +
@@ -3873,7 +3766,7 @@ internal static class OhDataEndpointFactory
 
                     // #662 does not reclassify here: the profile applied the options itself, so
                     // the framework composed nothing it could attribute a failure to.
-                    object[] items = EvaluateQueryWithArithmeticFaultGuard(
+                    object[] items = QueryOptionGate.EvaluateQueryWithArithmeticFaultGuard(
                         () => queryable.ToArray(), options, logger, source.EntitySetName);
 
                     // #360: a continuation only when the probe row proves more rows exist — an
@@ -4014,7 +3907,7 @@ internal static class OhDataEndpointFactory
 
                     // #385: refuse a literal zero divisor BEFORE execution, so every provider gives
                     // the same answer instead of three (400 / 200-empty / 500).
-                    if (FindLiteralZeroDivisor(options) is { } zeroDivisorOption)
+                    if (QueryOptionGate.FindLiteralZeroDivisor(options) is { } zeroDivisorOption)
                     {
                         return ODataError(400, "InvalidQueryOption",
                             $"The {zeroDivisorOption} expression divides by the literal 0, which cannot " +
@@ -4338,7 +4231,7 @@ internal static class OhDataEndpointFactory
                                 // #494: only the TRANSLATION of this query is a client-error
                                 // candidate; a fault raised once rows start arriving is the
                                 // server's. See TranslateThenMaterialize.
-                                ExpandEngine.ExpandCountCarrier<TModel>[] carriers = EvaluateQueryWithArithmeticFaultGuard(
+                                ExpandEngine.ExpandCountCarrier<TModel>[] carriers = QueryOptionGate.EvaluateQueryWithArithmeticFaultGuard(
                                     () => QueryOptionGate.TranslateThenMaterialize(() => carrierQuery), options, logger, source.EntitySetName);
 
                                 // Unwrap IMMEDIATELY: `items` is a plain TModel[] from here on, so
@@ -4439,7 +4332,7 @@ internal static class OhDataEndpointFactory
                                 // TargetInvocationException so the provider's real exception type
                                 // reaches the classifier. It therefore goes INSIDE the factory
                                 // TranslateThenMaterialize treats as translation.
-                                items = EvaluateQueryWithArithmeticFaultGuard(
+                                items = QueryOptionGate.EvaluateQueryWithArithmeticFaultGuard(
                                     () => QueryOptionGate.TranslateThenMaterialize(() => ApplySelectPushdown(
                                         ExpandEngine.ApplyIncludeFallback(
                                             filtered, engagedExpandNavs, efInclude,
@@ -4473,7 +4366,7 @@ internal static class OhDataEndpointFactory
                         {
                             try
                             {
-                                items = EvaluateQueryWithArithmeticFaultGuard(
+                                items = QueryOptionGate.EvaluateQueryWithArithmeticFaultGuard(
                                     () => QueryOptionGate.TranslateThenMaterialize(() => pushedQuery), options, logger, source.EntitySetName);
                             }
                             catch (QueryOptionGate.QueryTranslationFailedException ex)
@@ -4930,7 +4823,7 @@ internal static class OhDataEndpointFactory
 
                     // #385: refuse a literal zero divisor BEFORE execution, so every provider gives
                     // the same answer instead of three (400 / 200-empty / 500).
-                    if (FindLiteralZeroDivisor(options) is { } zeroDivisorOption)
+                    if (QueryOptionGate.FindLiteralZeroDivisor(options) is { } zeroDivisorOption)
                     {
                         return ODataError(400, "InvalidQueryOption",
                             $"The {zeroDivisorOption} expression divides by the literal 0, which cannot " +
@@ -4948,7 +4841,7 @@ internal static class OhDataEndpointFactory
                             : countResult.Items.Cast<TModel>().AsQueryable();
                         // #662 does not reclassify here, as on the P1 collection read: the
                         // profile composed this queryable, so the framework has nothing to blame.
-                        long odataQueryableCount = EvaluateQueryWithArithmeticFaultGuard(
+                        long odataQueryableCount = QueryOptionGate.EvaluateQueryWithArithmeticFaultGuard(
                             () => queryable.LongCount(), options, logger, source.EntitySetName);
                         return Results.Content(odataQueryableCount.ToString(), "text/plain");
                     }
