@@ -316,7 +316,7 @@ internal static class ExpandEngine
     // (see the RunDelegate branch below) throws Microsoft.OData.ODataException rather than
     // returning/threading an IResult — every caller of ApplyCollectionPipelineAsync already catches
     // that exception and converts it to 400 InvalidQueryOption.
-    internal static async Task ExpandLevelAsync(
+    private static async Task ExpandLevelAsync(
         IReadOnlyList<object> items,
         IReadOnlyList<JsonObject> jsonItems,
         SelectExpandClause clause,
@@ -2179,7 +2179,7 @@ internal static class ExpandEngine
     /// index-aligned with that list. <c>null</c> (the ordinary path) changes nothing.
     /// </para>
     /// </summary>
-    internal static bool TryBuildProjectionInit<TModel>(
+    private static bool TryBuildProjectionInit<TModel>(
         IReadOnlyList<string> selectedNames,
         IEntitySetEndpointSource source,
         bool hasParameterlessCtor,
@@ -2911,7 +2911,7 @@ internal static class ExpandEngine
     // #254 (item 2): the OData-bound lambdas for one engaged expand's nested $filter/$orderby, split
     // out of the shaping step (BindNavShape → ApplyNavShape) so the $levels recursion can bind ONCE
     // and apply at every level. Null members mean "the request carried no such clause".
-    internal readonly record struct NavShapeBindings(
+    private readonly record struct NavShapeBindings(
         LambdaExpression? Predicate,
         IReadOnlyList<(LambdaExpression Key, bool Descending)>? OrderBy);
 
@@ -2971,7 +2971,7 @@ internal static class ExpandEngine
     // BuildNavCountExpression / ExpandCountCarrier). Because the count no longer rides on the
     // materialized array's length, this level no longer has to fetch the whole filtered collection
     // to count it: $skip/$top compose to SQL exactly as they do without $count.
-    internal static Expression ApplyNavShape(
+    private static Expression ApplyNavShape(
         Expression access, EngagedExpand engaged, Type elem, IEdmModel model,
         in NavShapeBindings bound, int? maxExpandTop, bool deferPagingToJson = false,
         bool countViaCarrier = false)
@@ -3226,7 +3226,7 @@ internal static class ExpandEngine
     // #206 phase 2 (optioned expand): the CLR property for a navigation element type's single EDM key,
     // used to stabilize nested paging (see BuildShapedNavAccess). Returns null for a composite key, a
     // keyless type, or a CLR name that does not resolve — the caller then simply skips stabilization.
-    internal static PropertyInfo? TryGetKeyClrProperty(IEdmModel model, Type elem)
+    private static PropertyInfo? TryGetKeyClrProperty(IEdmModel model, Type elem)
     {
         // #508: EdmClrTypeMap, not model.FindDeclaredType(elem.FullName). On a renamed schema this
         // answered null for every element type, which made every navigation non-pageable (#313) and

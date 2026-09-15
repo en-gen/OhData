@@ -130,7 +130,7 @@ public static class BenchOpenTypeData
     }
 
     // Typed as IReadOnlyList<object?> and populated with BOXED rows on purpose: that is the exact
-    // shape OhDataEndpointFactory.SerializeBoundedCollection hands System.Text.Json (see its
+    // shape ExpandEngine.SerializeBoundedCollection hands System.Text.Json (see its
     // remarks — element types are resolved per element by runtime type), so the denominator this
     // measurement divides its delta into is the framework's real serialize cost rather than a
     // cheaper strongly-typed-array approximation of it.

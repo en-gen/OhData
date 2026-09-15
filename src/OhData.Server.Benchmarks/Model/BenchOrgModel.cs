@@ -19,7 +19,7 @@ namespace OhData.Server.Benchmarks.Model;
 /// requires.</description></item>
 /// </list>
 /// Unlike <see cref="BenchWidget"/> (a plain <c>List&lt;T&gt;</c> store — <c>$expand</c> pushdown is
-/// gated to an EF Core-backed <c>IQueryable</c>; see <c>OhDataEndpointFactory.ResolveEfCoreAssembly</c>),
+/// gated to an EF Core-backed <c>IQueryable</c>; see <c>ExpandEngine.ResolveEfCoreAssembly</c>),
 /// this pair is served from <see cref="BenchOrgDbContext"/> (EF Core Sqlite, in-memory keep-alive
 /// connection) so the pushdown code path is actually exercised rather than silently falling back to the
 /// EDM-only path. Both hosts read from an EF Core Sqlite-backed <c>IQueryable</c> for a fair, apples-to-
