@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -123,9 +124,11 @@ public class WriteBodyContractTests
     // ── #510: client-supplied body keys must not reach the memoizing helper ────────
 
     /// <summary>
-    /// <c>FindClrPropertyByEdmName</c> memoizes on <c>(Type, string)</c> in a process-wide cache
-    /// keyed by the caller's exact string, and PATCH called it once per BODY PROPERTY NAME. A
-    /// caller could therefore grow that cache without bound with a stream of unmatched keys.
+    /// PATCH resolves body property names through its own lookup table (#510/#536), not through
+    /// <c>ODataPropertyNaming.FindClrPropertyByEdmName</c> per body key — so this was already true
+    /// before #537. Kept as a regression pin covering the write path, alongside #537's read-path
+    /// coverage of the one call site (<c>ApplyNavOrderBy</c>) that used to violate it: a caller could
+    /// grow a process-wide cache without bound by sending a stream of unmatched keys.
     /// </summary>
     [Fact]
     public async Task Patch_UnmatchedBodyKeys_NeverReachTheProcessWideNameCache()
@@ -146,7 +149,7 @@ public class WriteBodyContractTests
         var response = await fx.Client.PatchAsync("/odata/WbContacts(1)", content);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        Assert.Empty(NameCacheKeysContaining(marker));
+        Assert.Empty(NameCacheStringsContaining(marker));
     }
 
     /// <summary>
@@ -171,20 +174,53 @@ public class WriteBodyContractTests
         Assert.Contains("Age", WbContactProfile.LastPatchChangedProperties!);
     }
 
-    private static List<string> NameCacheKeysContaining(string marker)
+    /// <summary>
+    /// Reflects over every private static field on <c>ODataPropertyNaming</c> and reports any cache
+    /// KEY whose string content contains <paramref name="marker"/> — a string key directly, or a
+    /// string component of a tuple key (the shape <c>FindClrPropertyByEdmName</c>'s cache had before
+    /// #537, kept discoverable here on purpose so this test still means something if that cache is
+    /// ever keyed on a string again). Deliberately does not name the field: #537 replaced it with one
+    /// keyed by <c>Type</c> alone, and a future change should not have to touch this helper to keep
+    /// the invariant meaningful.
+    /// </summary>
+    private static List<string> NameCacheStringsContaining(string marker)
     {
         Type naming = typeof(OhDataRegistration).Assembly.GetType("OhData.ODataPropertyNaming")!;
-        FieldInfo field = naming.GetField(
-            "s_clrPropertyByEdmNameCache", BindingFlags.NonPublic | BindingFlags.Static)!;
-        object cache = field.GetValue(null)!;
         var hits = new List<string>();
-        foreach (object? entry in (System.Collections.IEnumerable)cache)
+        foreach (FieldInfo field in naming.GetFields(BindingFlags.NonPublic | BindingFlags.Static))
         {
-            object key = entry!.GetType().GetProperty("Key")!.GetValue(entry)!;
-            string edmName = (string)key.GetType().GetField("Item2")!.GetValue(key)!;
-            if (edmName.Contains(marker, StringComparison.Ordinal)) hits.Add(edmName);
+            if (field.GetValue(null) is not IEnumerable cache) continue;
+            foreach (object? entry in cache)
+            {
+                if (entry is null) continue;
+                object? key = entry.GetType().GetProperty("Key")?.GetValue(entry);
+                CollectKeyStrings(key, marker, hits);
+            }
         }
         return hits;
+    }
+
+    private static void CollectKeyStrings(object? key, string marker, List<string> hits)
+    {
+        switch (key)
+        {
+            case null:
+                return;
+            case string s:
+                if (s.Contains(marker, StringComparison.Ordinal)) hits.Add(s);
+                return;
+            case Type:
+                return; // a Type key can never equal a client-supplied marker string
+        }
+
+        Type t = key.GetType();
+        if (t.Namespace == "System" && t.Name.StartsWith("ValueTuple", StringComparison.Ordinal))
+        {
+            foreach (FieldInfo f in t.GetFields())
+            {
+                CollectKeyStrings(f.GetValue(key), marker, hits);
+            }
+        }
     }
 
     // ── #474: a framework-level ceiling on a default configuration ─────────────────
