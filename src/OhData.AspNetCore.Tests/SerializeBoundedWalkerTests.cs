@@ -341,7 +341,7 @@ public sealed class SelfReferentialGeneralTests : IAsyncLifetime
         var options = new ODataQueryOptions<SpNode>(queryContext, httpContext.Request);
         SelectExpandClause clause = options.SelectExpand!.SelectExpandClause;
 
-        MethodInfo serializeBounded = typeof(OhDataEndpointFactory).GetMethod(
+        MethodInfo serializeBounded = typeof(ExpandEngine).GetMethod(
             "SerializeBounded", BindingFlags.NonPublic | BindingFlags.Static)!;
 
         // Invoke the REAL walker directly over every tracked node — same call shape
@@ -354,7 +354,7 @@ public sealed class SelfReferentialGeneralTests : IAsyncLifetime
             object? result = serializeBounded.Invoke(null, new object?[]
             {
                 n, edmType, registration.EdmModel, clause, null, null,
-                OhDataEndpointFactory.MaxNestedExpandDepth, null, false
+                ExpandEngine.MaxNestedExpandDepth, null, false
             });
             Assert.NotNull(result);
         }

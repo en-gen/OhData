@@ -233,8 +233,8 @@ public sealed class Issue322ModelBClassificationTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// THE DECISION TABLE ITSELF, asserted directly against the private
-    /// <c>OhDataEndpointFactory.ResolveNavTreatment</c> — the single authority shared by the pushdown
+    /// THE DECISION TABLE ITSELF, asserted directly against the internal
+    /// <c>ExpandEngine.ResolveNavTreatment</c> — the single authority shared by the pushdown
     /// gate and the delegate expansion path, so pinning it pins both. Every row of the FROZEN Model B
     /// table on #293 is covered, including the two multi-candidate disagreement rows, and the
     /// "silent sibling has no opinion" row that EDM-sourcing would delete.
@@ -314,17 +314,17 @@ public sealed class Issue322ModelBClassificationTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Calls the private <c>OhDataEndpointFactory.ResolveNavTreatment</c> and returns the
-    /// <c>NavTreatment</c> enum member's name. Reflection because both the method and its
-    /// <c>NavTreatmentResult</c> return type are private — deliberately so, since it is the shared
-    /// authority and must not grow a second caller inside the library.
+    /// Calls <c>ExpandEngine.ResolveNavTreatment</c> and returns the
+    /// <c>NavTreatment</c> enum member's name. Reflection because the method and its
+    /// <c>NavTreatmentResult</c> return type are internal (not public) — deliberately so, since it
+    /// is the shared authority and must not grow a second caller outside the library.
     /// </summary>
     private static string InvokeResolveNavTreatment(string navName, IReadOnlyList<IEntitySetEndpointSource> candidates)
     {
-        MethodInfo method = typeof(OhDataEndpointFactory).GetMethod(
+        MethodInfo method = typeof(ExpandEngine).GetMethod(
             "ResolveNavTreatment", BindingFlags.NonPublic | BindingFlags.Static)
             ?? throw new InvalidOperationException(
-                "OhDataEndpointFactory.ResolveNavTreatment not found — Model B's shared decision " +
+                "ExpandEngine.ResolveNavTreatment not found — Model B's shared decision " +
                 "authority was renamed or removed; this pin must be updated deliberately, not deleted.");
 
         object result = method.Invoke(null, new object[] { navName, candidates })!;

@@ -47,7 +47,7 @@ public class ExpandLevelsResolutionTests
     [InlineData(false, 0, 6, 6, 0)]     // 0 stays 0; each caller decides what 0 means
     public void ResolveLevelsBudget_ConsultsBothBounds(
         bool isMaxLevel, long requested, int remainingDepth, int modelBoundCap, int expected) =>
-        Assert.Equal(expected, OhDataEndpointFactory.ResolveLevelsBudget(
+        Assert.Equal(expected, ExpandEngine.ResolveLevelsBudget(
             isMaxLevel, requested, remainingDepth, modelBoundCap));
 
     // The clamp is only unreachable on a shipped build while these two stay tied. Untie them —
@@ -55,7 +55,7 @@ public class ExpandLevelsResolutionTests
     // tripwire for that.
     [Fact]
     public void ModelBoundCap_IsTiedToTheDepthCeiling() =>
-        Assert.Equal(EntitySetDefaults.MaxExpansionDepthCeiling, OhDataEndpointFactory.MaxNestedExpandDepth);
+        Assert.Equal(EntitySetDefaults.MaxExpansionDepthCeiling, ExpandEngine.MaxNestedExpandDepth);
 
     // ── The behaviour, end to end at the ceiling ────────────────────────────────────────────────
 

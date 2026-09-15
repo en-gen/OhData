@@ -649,7 +649,7 @@ public sealed class RuntimeTypeConfigResolutionTests
         IEdmModel model, Type probeClrType, JsonSerializerOptions? baseOptions = null)
     {
         const BindingFlags Any = BindingFlags.NonPublic | BindingFlags.Static;
-        Type factory = typeof(OhDataRegistration).Assembly.GetType("OhData.OhDataEndpointFactory", true)!;
+        Type factory = typeof(OhDataRegistration).Assembly.GetType("OhData.ExpandEngine", true)!;
         baseOptions ??= new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
         factory.GetMethod("PrimeNavSuppression", Any)!.Invoke(null, new object?[] { baseOptions, model });

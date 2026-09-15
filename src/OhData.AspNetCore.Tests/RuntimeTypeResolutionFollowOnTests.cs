@@ -372,7 +372,7 @@ public sealed class RuntimeTypeResolutionFollowOnTests
     private static JsonSerializerOptions NavSuppressedOptions(IEdmModel model, Type probeClrType)
     {
         const BindingFlags Any = BindingFlags.NonPublic | BindingFlags.Static;
-        Type factory = typeof(OhDataRegistration).Assembly.GetType("OhData.OhDataEndpointFactory", true)!;
+        Type factory = typeof(OhDataRegistration).Assembly.GetType("OhData.ExpandEngine", true)!;
         var baseOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
         factory.GetMethod("PrimeNavSuppression", Any)!.Invoke(null, new object?[] { baseOptions, model });
@@ -444,7 +444,7 @@ public sealed class RuntimeTypeResolutionFollowOnTests
     /// name, which closed #344 with it. What was missing was coverage of #344's own shape: every
     /// existing fixture roots its entity set at the BASE type, where the two walks agree.
     /// VERIFIED to fail by restoring the single <c>!=</c> at
-    /// <c>OhDataEndpointFactory.IsNavVisibleInBaseOptions</c> — both cases below then come back
+    /// <c>ExpandEngine.IsNavVisibleInBaseOptions</c> — both cases below then come back
     /// with the navigation key absent, while <see cref="ByteIdentity_TheBaseRootedSet_IsUnchanged"/>
     /// stays green.
     /// </para>

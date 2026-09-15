@@ -920,7 +920,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         }
         // Issue #183: pass an explicit max expansion depth so nested $expand
         // (e.g. $expand=A($expand=B($expand=C))) is not rejected by the model-bound default of 2.
-        // The runtime recursion in OhDataEndpointFactory.ExpandLevelAsync bounds actual execution.
+        // The runtime recursion in ExpandEngine.ExpandLevelAsync bounds actual execution.
         // #253 completion: $expand identifiers are EDM names, so a [JsonPropertyName]-renamed navigation
         // is expanded by its JSON name. Resolve the CLR-captured allowlist to EDM names before handing
         // it to the model builder (an un-renamed nav resolves to its own CLR name unchanged).
@@ -928,7 +928,7 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
         {
             string[]? expandNames = ResolveStructuralAllowlistToEdmNames(_expandProperties);
             expandDeclared = new ModelBoundAllowlist(applied: true, expandNames);
-            entityType.Expand(OhData.OhDataEndpointFactory.MaxNestedExpandDepth, expandNames!);
+            entityType.Expand(OhData.ExpandEngine.MaxNestedExpandDepth, expandNames!);
         }
         if (FilterEnabled ?? defaults.FilterEnabled)
         {
