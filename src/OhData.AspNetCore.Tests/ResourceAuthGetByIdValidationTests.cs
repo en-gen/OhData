@@ -80,18 +80,18 @@ public class ResourceAuthGetByIdValidationTests
 
     /// <summary>
     /// A COLLECTION-level bound operation is not key-based either, so this guard has nothing to ask
-    /// of it — but the configuration is refused all the same, by #690: the rule reaches no keyed
-    /// route, so the requirement could never be evaluated. The message has to be #690's and not this
-    /// guard's, which is what still proves the guard keys off the routes that attach the filter.
+    /// of it — but the configuration is refused all the same, by #690: the route it leaves behind
+    /// enforces nothing. The message has to be #690's and not this guard's, which is what still
+    /// proves the guard keys off the routes that actually attach the filter.
     /// </summary>
     [Fact]
-    public async Task ResourceInvoke_OnCollectionLevelOperationsOnly_IsRefusedByTheKeylessRuleCheck()
+    public async Task ResourceInvoke_OnCollectionLevelOperationsOnly_IsRefusedByTheKeylessRouteCheck()
     {
         InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await ResourceAuthTestHost.BuildAsync(o => o.AddEntitySetProfile<RagCollectionInvokeNoGetByIdProfile>()));
 
         Assert.Contains("RagCollectionInvoke", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("no route carrying a key", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("whose route carries no key", ex.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("GetById", ex.Message, StringComparison.Ordinal);
     }
 
