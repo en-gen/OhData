@@ -74,6 +74,10 @@ status codes or headers.
       `ODataQueryResult.TotalCount`** (#379). Without it a paged `$count=true` now fails loudly
       instead of reporting the page length as the total. The alternative is to drop
       `OhDataSystemQueryOption.Count` from `HonouredQueryOptions`, which refuses `$count` with `501`.
+- [ ] **`.RequireResource()` on a rule whose only routes are collection-bound operations now throws
+      at `MapOhData()`** (#690). It was a silent no-op, so the route was served anonymously. Declare
+      the operation with `BindEntityFunction`/`BindEntityAction`, or use the coarse requirements for
+      it. A generic `Invoke(…)` rule beside an entity-bound operation is unaffected.
 
 #### 4. Nothing to do
 
@@ -483,6 +487,50 @@ status codes or headers.
   distinction is visible rather than looking like an oversight: §11.2.3.1 defines `/$value` for
   *primitive* properties only, so a complex property has no raw value by definition. That request is
   meaningless, not unimplemented — no amount of implementing would give it an answer.
+
+- **`.RequireResource()` on a rule that reaches no keyed route is refused at startup (#690).**
+  Resource-based authorization (#199 Layer B) evaluates the requirement against the entity loaded
+  from the route's `{key}` segment. A **collection-bound** function or action is mapped as
+  `/{Set}/{Name}` and has no key, so the requirement could never be evaluated — and nothing said so.
+  Measured:
+
+  ```csharp
+  BindFunction(Peek);
+  ConfigureAuthorization(a => a.Invoke(i => i.RequireResource()));
+  // anonymous GET /odata/{Set}/Peek -> 200, handler executed
+  ```
+
+  Three gates each declined for their own reason and the composition was silence:
+  `AttachResourceFilter` found no `"key"` route value and called `next`; `ApplyAuthRequirements` has
+  no arm for `AuthRequirementKind.Resource`, so a rule carrying only that requirement emitted no
+  endpoint gate at all; and #487's anonymous-route audit saw a non-null rule and read it as
+  authorized. A **named** `Invoke("Peek", …)` rule reached the identical hole. Pre-existing — not
+  caused by #526, which only made the per-route no-op visible in code.
+
+  > **⚠ BREAKING CHANGE, in the security direction.** `MapOhData()` now throws
+  > `InvalidOperationException` when a rule carrying `.RequireResource()` reaches no route with a
+  > key, naming the rule, the collection-bound operation and the remedies. An app in this state is
+  > running an authorization requirement that does nothing, which is the whole reason to refuse it
+  > rather than warn — #487 already refuses the same shape on an **unbound** operation, on reasoning
+  > that transfers verbatim. Remedy: declare the operation with
+  > `BindEntityFunction`/`BindEntityAction` so it carries a key, or use the coarse requirements
+  > (`RequireAuthenticatedUser`/`RequireRole`/`RequireClaim`/`RequirePolicy`) for it.
+
+  **The test is whether the RULE reaches a key-based route, never the requirement kind**, because a
+  generic `Invoke(…)` covers both binding levels: beside an entity-bound operation the requirement is
+  genuinely honoured, and that configuration stays legal (asserted on the wire in both directions,
+  not merely by starting). So does any rule covering `Read`/`Create`/`Update`/`Delete` — `All(…)`
+  included — which keeps its keyed routes whatever its `Invoke` half reaches. Named rules resolve
+  through **the same `OrdinalIgnoreCase` comparison `ResolveOperationRule` uses** (#525's reasoning:
+  a second, independently derived comparison would refuse a different set of configurations than the
+  one that actually no-ops at runtime). Coarse requirements on a collection-bound operation are
+  untouched — that route is still gated, and still runs the handler for a caller who satisfies them.
+
+  Emission scope across the repo's own eight test projects: one fixture,
+  `RagCollectionInvokeNoGetByIdProfile`, which #486's suite asserted *"must keep starting"* — it is
+  this defect verbatim, pinned as correct behaviour. Its expectation is **inverted, not deleted**,
+  and it now asserts the #690 message rather than #486's, which is what still proves the GetById
+  guard keys off the routes that actually attach the filter.
 
 
 ### Added
