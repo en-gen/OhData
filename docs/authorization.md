@@ -208,10 +208,12 @@ the entity as the resource.
 Key points:
 
 - **The resource is the `{key}` entity.** For property/navigation/`$ref` routes the resource is the
-  parent entity in the path, so every one of *this profile's* routes is covered by *this profile's*
-  rule - none of them escapes it. **Create** is the exception: `POST` to a collection is checked
-  against the *incoming* (pre-persist) entity from the body (there's no stored row yet); `POST` to a
-  navigation is checked against the parent.
+  parent entity in the path, so every one of *this profile's* keyed routes is covered by *this
+  profile's* rule. **Create** is the exception: `POST` to a collection is checked against the
+  *incoming* (pre-persist) entity from the body (there's no stored row yet); `POST` to a navigation is
+  checked against the parent. The routes with **no** key - a collection read, and a collection-bound
+  function or action (`/{Set}/{Name}`) - have no instance to check against; see the two bullets
+  below.
   <br>Read that literally: it says the parent entity is checked, not the *related* entity. A
   navigation route is authorized as an operation on the parent, so if the navigation's target type is
   *also* exposed as its own, more strictly protected entity set, **that set's rule is not applied
@@ -233,15 +235,24 @@ Key points:
   `GetById`: it evaluates its `Create` requirement against the deserialized model directly. Not
   compatible with `AllowUpsert` create-on-`PUT` (a missing entity returns `404` before the handler
   runs).
-- **A rule that reaches no keyed route is refused at startup** (`InvalidOperationException` from
-  `MapOhData()`). A collection-bound function or action is mapped as `/{Set}/{Name}` and carries no
-  `{key}` segment, so there is no entity to evaluate the requirement against: an
-  `Invoke(...)`/`Invoke("Name", ...)` rule whose only routes are collection-bound operations would
-  drop the requirement silently and leave the route with whatever coarse requirements it carries — no
-  requirement at all, when it carries none. Declare the operation with
-  `BindEntityFunction`/`BindEntityAction` so it has a key to authorize against, or use the coarse
-  requirements for it. A rule that *also* reaches a keyed route stays legal: a generic `Invoke(...)`
-  beside an entity-bound operation, or any rule covering `Read`/`Create`/`Update`/`Delete`.
+- **On a collection-bound operation the requirement is dropped, and OhData says so at startup.** A
+  collection-bound function or action is mapped as `/{Set}/{Name}` with no `{key}` segment, so there
+  is no instance for the check to run against and the resource half of the rule governing it is not
+  applied on that route. What OhData does about it depends on what the route is left enforcing, asked
+  per operation against the rule that governs it - never on what that rule reaches elsewhere, because
+  an entity-bound sibling is a *different route*:
+  - **The rule carries `.RequireResource()` and nothing else → refused** (`InvalidOperationException`
+    from `MapOhData()`). That route would enforce nothing at all. Add a coarse requirement to the
+    rule, declare the operation with `BindEntityFunction`/`BindEntityAction` so it carries a key, or
+    scope the rule with `Invoke("Name", ...)` to the operations that have one.
+  - **The rule carries `.RequireResource()` alongside a coarse requirement → one `Warning` per
+    (entity set, operation)**, and the app starts. The coarse half still gates the route, so what is
+    lost is the narrowing: a caller who satisfies it reaches the operation whatever a resource handler
+    would have said about any row. Drop `.RequireResource()` from that rule if the coarse
+    requirements are the whole intent, and the warning stops.
+
+  Both branches ask only about **collection-bound** operations. Entity-bound operations carry a key
+  and are unaffected, as is a profile that declares no bound operations at all.
 
 ### Fallback
 
