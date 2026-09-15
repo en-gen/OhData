@@ -210,7 +210,7 @@ public sealed class RenamedSchemaPushdownTests : IAsyncLifetime
         OhDataRegistration registration = Registration();
 
         const BindingFlags Any = BindingFlags.NonPublic | BindingFlags.Static;
-        Type factory = typeof(OhDataRegistration).Assembly.GetType("OhData.OhDataEndpointFactory", true)!;
+        Type factory = typeof(OhDataRegistration).Assembly.GetType("OhData.ExpandEngine", true)!;
         object? result = factory.GetMethod("ResolveProfilesForClrType", Any)!
             .Invoke(null, new object?[] { typeof(NmChild), registration.EdmModel, registration });
 
@@ -285,7 +285,7 @@ public sealed class RenamedSchemaPushdownTests : IAsyncLifetime
     private static T Invoke<T>(string name, params object?[] args)
     {
         const BindingFlags Any = BindingFlags.NonPublic | BindingFlags.Static;
-        Type factory = typeof(OhDataRegistration).Assembly.GetType("OhData.OhDataEndpointFactory", true)!;
+        Type factory = typeof(OhDataRegistration).Assembly.GetType("OhData.ExpandEngine", true)!;
         return (T)factory.GetMethod(name, Any)!.Invoke(null, args)!;
     }
 }
