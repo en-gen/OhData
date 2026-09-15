@@ -22,7 +22,7 @@ namespace OhData.AspNetCore.Tests;
 // TryBuildEngagedExpand's `IsMaxLevel ? remainingDepth : ...`, where remainingDepth is
 // source.MaxExpansionDepth ALONE — the model-bound MaxDepth is not consulted.
 //
-// Run this with OhDataEndpointFactory.MaxNestedExpandDepth temporarily lowered (e.g. 5) so the
+// Run this with ExpandEngine.MaxNestedExpandDepth temporarily lowered (e.g. 5) so the
 // two caps differ and the experiment is cheap.
 public sealed class MxNode
 {
@@ -51,7 +51,7 @@ public sealed class MxNodeProfile : EntitySetProfile<int, MxNode>
         // an ArgumentOutOfRangeException, and #428 tied MaxNestedExpandDepth to that same ceiling,
         // so the divergence this probe measures is no longer representable in a shipped build. To
         // reproduce the original measurement, raise EntitySetDefaults.MaxExpansionDepthCeiling AND
-        // lower OhDataEndpointFactory.MaxNestedExpandDepth locally.
+        // lower ExpandEngine.MaxNestedExpandDepth locally.
         MaxExpansionDepth = EntitySetDefaults.MaxExpansionDepthCeiling;
         GetQueryable = () => db.MxNodes.AsQueryable();
         HasMany(x => x.Children);

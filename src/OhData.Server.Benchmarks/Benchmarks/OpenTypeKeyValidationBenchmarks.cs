@@ -29,7 +29,7 @@ namespace OhData.Server.Benchmarks.Benchmarks;
 /// <para>
 /// <b>Unit under measurement.</b> One <c>JsonSerializer.SerializeToNode</c> call over a 1,000-row
 /// page typed as <c>IReadOnlyList&lt;object?&gt;</c> — the exact call and the exact argument shape
-/// <c>OhDataEndpointFactory.SerializeBoundedCollection</c> makes for a collection GET. Not a tight
+/// <c>ExpandEngine.SerializeBoundedCollection</c> makes for a collection GET. Not a tight
 /// loop over the validator: the whole point is that the in-situ cost and the isolated cost disagree,
 /// so measuring it in isolation again would answer the wrong question.
 /// </para>
