@@ -64,13 +64,6 @@ per-navigation-property**: there is no way to allow deep insert for one navigati
 entity but not another. Opt in per entity set (or server-wide via `builder.WithDefaults(d =>
 d.AllowDeepWrites = true)`), not per property.
 
-> **Renamed in 1.6.0.** This flag was called `AllowDeepInsert` through 1.5.0, when it governed the
-> collection `POST` alone. It now governs nested-graph handling on **every** write verb — deep
-> insert *and* deep update — so a name saying only "insert" described one of the two. The old name
-> remains as an `[Obsolete]` forwarding property on both `EntitySetProfile` and
-> `EntitySetDefaults`, reading and writing the same storage, so code compiled against 1.5.0 keeps
-> working. See [#457](https://github.com/en-gen/OhData/issues/457).
-
 ## Default behavior (`AllowDeepWrites = false`)
 
 When a write body contains nested values for **navigation properties**, the framework does not let
