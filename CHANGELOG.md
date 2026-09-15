@@ -78,10 +78,13 @@ status codes or headers.
       `ODataQueryResult.TotalCount`** (#379). Without it a paged `$count=true` now fails loudly
       instead of reporting the page length as the total. The alternative is to drop
       `OhDataSystemQueryOption.Count` from `HonouredQueryOptions`, which refuses `$count` with `501`.
-- [ ] **`.RequireResource()` on a rule whose only routes are collection-bound operations now throws
-      at `MapOhData()`** (#690). It was a silent no-op, so the route was served anonymously. Declare
-      the operation with `BindEntityFunction`/`BindEntityAction`, or use the coarse requirements for
-      it. A generic `Invoke(…)` rule beside an entity-bound operation is unaffected.
+- [ ] **`.RequireResource()` on a collection-bound function or action is dropped, and OhData now
+      says so** (#690/#696). That route has no `{key}`, so the requirement never ran. If the rule
+      governing it carries **nothing else**, `MapOhData()` throws — the route was enforcing nothing
+      and serving anonymously. If it also carries a coarse requirement, the app starts and logs one
+      `Warning`: the coarse half still gates the route, only the narrowing is lost. Remedy for
+      either: declare the operation with `BindEntityFunction`/`BindEntityAction`, or scope the rule
+      with `Invoke("Name", …)` to the operations that carry a key.
 
 #### 4. Nothing to do
 
@@ -492,11 +495,14 @@ status codes or headers.
   *primitive* properties only, so a complex property has no raw value by definition. That request is
   meaningless, not unimplemented — no amount of implementing would give it an answer.
 
-- **`.RequireResource()` on a rule that reaches no keyed route is refused at startup (#690).**
-  Resource-based authorization (#199 Layer B) evaluates the requirement against the entity loaded
-  from the route's `{key}` segment. A **collection-bound** function or action is mapped as
-  `/{Set}/{Name}` and has no key, so the requirement could never be evaluated — and nothing said so.
-  Measured:
+- **`.RequireResource()` on a collection-bound operation is dropped on that route; the
+  configuration is now refused or warned about (#690, closes #696).** Resource-based authorization
+  (#199 Layer B) evaluates the requirement against the entity loaded from the route's `{key}`
+  segment. A **collection-bound** function or action is mapped as `/{Set}/{Name}` and carries no key,
+  so on that route three gates each declined for their own reason and the composition was silence:
+  `AttachResourceFilter` found no `"key"` route value and called `next`; `ApplyAuthRequirements` has
+  no arm for `AuthRequirementKind.Resource`, so the requirement emitted no endpoint gate; and #487's
+  anonymous-route audit saw a non-null rule and read it as authorized. Measured:
 
   ```csharp
   BindFunction(Peek);
@@ -504,37 +510,54 @@ status codes or headers.
   // anonymous GET /odata/{Set}/Peek -> 200, handler executed
   ```
 
-  Three gates each declined for their own reason and the composition was silence:
-  `AttachResourceFilter` found no `"key"` route value and called `next`; `ApplyAuthRequirements` has
-  no arm for `AuthRequirementKind.Resource`, so a rule carrying only that requirement emitted no
-  endpoint gate at all; and #487's anonymous-route audit saw a non-null rule and read it as
-  authorized. A **named** `Invoke("Peek", …)` rule reached the identical hole. Pre-existing — not
-  caused by #526, which only made the per-route no-op visible in code.
+  **The question is what the ROUTE is left enforcing, not what the RULE reaches elsewhere**, and that
+  distinction is the whole design rather than a detail. A generic `Invoke(…)` rule beside an
+  entity-bound operation is honoured on `…({key})/Tag` and dropped on `/{Set}/Peek` — measured, the
+  same rule, the same request: `403` for a non-owner on the first and `200` anonymous with the
+  handler executed on the second. So an entity-bound sibling does not redeem the collection-bound
+  route, and a rule's reach into `Read`/`Create`/`Update`/`Delete` does not either. Both are asked
+  per collection-bound operation, against the rule `ResolveOperationRule` returns for it — the same
+  resolution the route itself runs, by reference identity, so a rule that lost last-write-wins or was
+  displaced by a named one is never the one asked about. A **named** `Invoke("Peek", …)` rule resolves
+  through the same `OrdinalIgnoreCase` comparison, per #525.
 
-  > **⚠ BREAKING CHANGE, in the security direction.** `MapOhData()` now throws
-  > `InvalidOperationException` when a rule carrying `.RequireResource()` reaches no route with a
-  > key, naming the rule, the collection-bound operation and the remedies. An app in this state is
-  > running an authorization requirement that does nothing, which is the whole reason to refuse it
-  > rather than warn — #487 already refuses the same shape on an **unbound** operation, on reasoning
-  > that transfers verbatim. Remedy: declare the operation with
-  > `BindEntityFunction`/`BindEntityAction` so it carries a key, or use the coarse requirements
-  > (`RequireAuthenticatedUser`/`RequireRole`/`RequireClaim`/`RequirePolicy`) for it.
+  > **⚠ BREAKING CHANGE, in the security direction.** When the governing rule carries
+  > `.RequireResource()` **and nothing else**, `MapOhData()` now throws `InvalidOperationException`,
+  > naming the rule, the operation, the route template and the remedies. That route was enforcing
+  > nothing at all and serving anonymously, which is why it is refused rather than warned — #487
+  > already refuses the same shape on an **unbound** operation, on reasoning that transfers verbatim.
+  > Remedies: add a coarse requirement to the rule, declare the operation with
+  > `BindEntityFunction`/`BindEntityAction` so it carries a key, or scope the rule with
+  > `Invoke("Name", …)` to the operations that have one.
 
-  **The test is whether the RULE reaches a key-based route, never the requirement kind**, because a
-  generic `Invoke(…)` covers both binding levels: beside an entity-bound operation the requirement is
-  genuinely honoured, and that configuration stays legal (asserted on the wire in both directions,
-  not merely by starting). So does any rule covering `Read`/`Create`/`Update`/`Delete` — `All(…)`
-  included — which keeps its keyed routes whatever its `Invoke` half reaches. Named rules resolve
-  through **the same `OrdinalIgnoreCase` comparison `ResolveOperationRule` uses** (#525's reasoning:
-  a second, independently derived comparison would refuse a different set of configurations than the
-  one that actually no-ops at runtime). Coarse requirements on a collection-bound operation are
-  untouched — that route is still gated, and still runs the handler for a caller who satisfies them.
+  **When the rule also carries a coarse requirement, it starts and warns instead.** The route is
+  still gated by `RequireAuthenticatedUser`/`RequireRole`/`RequireClaim`/`RequirePolicy`; what is
+  silently dropped is the narrowing, not the gate. Refusing there would break apps that work today
+  and would contradict this repo's own guidance — `docs/authorization.md` recommends pairing
+  `.RequireResource()` with `.RequireAuthenticatedUser()` precisely so an anonymous request gets
+  `401` rather than reaching the handler for a `403`. One `Warning` per (entity set, operation) at
+  `MapOhData()`, in `WarnNavigationTargetAuthorization`'s shape: it names the rule spelling, the
+  operation, the route template, and says in as many words that the coarse requirements **do** gate
+  the route, so it cannot be misread as "this endpoint is open".
 
-  Emission scope across the repo's own eight test projects: one fixture,
-  `RagCollectionInvokeNoGetByIdProfile`, which #486's suite asserted *"must keep starting"* — it is
-  this defect verbatim, pinned as correct behaviour. Its expectation is **inverted, not deleted**,
-  and it now asserts the #690 message rather than #486's, which is what still proves the GetById
-  guard keys off the routes that actually attach the filter.
+  **#696 falls out of the same test rather than remaining a residual**: `All(c => c.RequireResource())`
+  beside a collection-bound operation is refused when it leaves that route enforcing nothing and
+  warned about when coarse requirements remain. Nothing in either branch depends on which other
+  categories the rule covers.
+
+  Silent, and asserted to be: coarse requirements alone on a collection-bound operation (still gated,
+  handler still reached by a caller who satisfies them), a rule governing only entity-bound
+  operations (Layer B fires in both directions), a profile declaring no bound operations, and a named
+  coarse rule displacing a generic resource one.
+
+  Emission scope across the repo's own eight test projects, measured by turning the warn branch into
+  a throw and running the full suite: **three emissions, all from this issue's own warn fixtures**;
+  zero from any pre-existing fixture and zero from the other seven projects, the TestBench included.
+  One pre-existing test moved: `ResourceAuthGetByIdValidationTests`' *"collection-level operations
+  only … must keep starting"*, which is this defect verbatim pinned as correct behaviour. Its
+  expectation is **inverted, not deleted**, and it asserts the #690 message rather than #486's —
+  which is what still proves the GetById guard keys off the routes that attach the filter.
+
 - **⚠ BREAKING CHANGE — four `[Obsolete]` 1.5.0-compat forwarders are removed (#644).**
   `EntitySetProfile.AllowDeepInsert`, `EntitySetDefaults.AllowDeepInsert` (both renamed
   `AllowDeepWrites` in 1.6.0, #457) and the seven-parameter `OhDataQueryOptionsMetadata`
