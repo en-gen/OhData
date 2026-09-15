@@ -30,7 +30,7 @@ namespace OhData.Server.Benchmarks;
 /// navigation fixture is deliberately backed by EF Core Sqlite instead: OhData's <c>$expand</c> pushdown
 /// (the "one JOIN per page" mechanism) is gated to an EF Core-backed <c>IQueryable</c> — a delegate-less
 /// navigation over a plain <c>List&lt;T&gt;.AsQueryable()</c> would silently fall back to the non-pushdown
-/// EDM-only path (see <c>OhDataEndpointFactory.ResolveEfCoreAssembly</c>) and the benchmark would measure
+/// EDM-only path (see <c>ExpandEngine.ResolveEfCoreAssembly</c>) and the benchmark would measure
 /// the wrong code path entirely. Each host opens its own keep-alive in-memory Sqlite connection and seeds
 /// it independently (<see cref="BenchOrgData.Seed"/>) — no shared mutable state between the two servers,
 /// matching the widget store's "own instance" discipline.
