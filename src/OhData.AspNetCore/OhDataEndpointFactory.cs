@@ -3577,7 +3577,7 @@ internal static class OhDataEndpointFactory
         // COLLECTION-level members of those two categories are deliberately excluded: the collection
         // POST evaluates its Create requirement inline against the deserialized model (never through
         // GetById), so it needs none, and a collection-bound operation's route has no {key} segment
-        // for the filter to read at all -- which the #690 check below refuses outright.
+        // for the filter to read at all -- which the #690 check below answers on its own terms.
         if (operationAuthRules is not null && !source.HasGetById)
         {
             if (CategoryHasResource(OhDataOperation.Read, null)
@@ -3619,56 +3619,60 @@ internal static class OhDataEndpointFactory
             }
         }
 
-        // #690: a Resource requirement is evaluated against the entity loaded from the route's {key}
-        // segment, and a collection-bound operation is mapped as /{Set}/{Name} with no key, so a rule
-        // that reaches only those can never be evaluated and the route falls back to whatever coarse
-        // requirements the rule carries -- with none, anonymous.
+        // #690/#696: a Resource requirement is evaluated against the entity loaded from the route's
+        // {key} segment, and a collection-bound operation is mapped as /{Set}/{Name} with no key, so
+        // on that route the requirement is dropped.
         //
-        // The test is the rule's REACH, never the requirement kind: a generic Invoke(...) covers both
-        // binding levels, and a rule reaching a keyed category is honoured there.
-        if (operationAuthRules is not null)
+        // The question is what the ROUTE is left enforcing, asked per collection-bound operation
+        // against the rule that governs it: a route left enforcing nothing is refused, and coarse
+        // requirements that still gate it are warned about.
+        foreach (BoundOperationDefinition op in source.BoundFunctions.Concat(source.BoundActions))
         {
-            BoundOperationDefinition[] boundOps = source.BoundFunctions.Concat(source.BoundActions).ToArray();
+            if (op.IsEntityLevel) continue;
 
-            // Identity, not record equality: two value-equal rules are separate declarations and only
-            // the one ResolveOperationRule returns -- the same resolution the routes run -- governs.
-            bool RuleGoverns(OperationAuthRule rule, BoundOperationDefinition op) =>
-                ReferenceEquals(ResolveOperationRule(OhDataOperation.Invoke, op.Name), rule);
+            // The route resolves its own rule exactly this way, so a rule that lost last-write-wins
+            // or was displaced by a named one is never the one asked about.
+            OperationAuthRule? rule = ResolveOperationRule(OhDataOperation.Invoke, op.Name);
+            if (rule is null || rule.AllowAnonymous) continue;
+            if (!rule.Requirements.Any(r => r.Kind == AuthRequirementKind.Resource)) continue;
 
-            const OhDataOperation keyedCategories = OhDataOperation.Read | OhDataOperation.Create
-                | OhDataOperation.Update | OhDataOperation.Delete;
+            string spelling = rule.BoundOperationName is null
+                ? "Invoke(...)"
+                : $"Invoke(\"{rule.BoundOperationName}\", ...)";
+            string opKind = op.IsAction ? "action" : "function";
+            string route = $"{(op.IsAction ? "POST" : "GET")} /{name}/{op.Name}";
 
-            foreach (OperationAuthRule rule in operationAuthRules)
+            if (!rule.Requirements.Any(r => r.Kind != AuthRequirementKind.Resource))
             {
-                if (rule.AllowAnonymous
-                    || (rule.Operations & OhDataOperation.Invoke) == 0
-                    || !rule.Requirements.Any(r => r.Kind == AuthRequirementKind.Resource)
-                    || (rule.Operations & keyedCategories) != 0
-                    || boundOps.Any(o => o.IsEntityLevel && RuleGoverns(rule, o)))
-                {
-                    continue;
-                }
-
-                BoundOperationDefinition? collectionOnlyOp =
-                    boundOps.FirstOrDefault(o => !o.IsEntityLevel && RuleGoverns(rule, o));
-                if (collectionOnlyOp is null) continue;
-
-                string spelling = rule.BoundOperationName is null
-                    ? "Invoke(...)"
-                    : $"Invoke(\"{rule.BoundOperationName}\", ...)";
-                string opKind = collectionOnlyOp.IsAction ? "action" : "function";
-                string opMethod = collectionOnlyOp.IsAction ? "POST" : "GET";
                 throw new InvalidOperationException(
                     $"Entity set '{name}': the authorization rule {spelling} declares " +
-                    ".RequireResource(), but it reaches no route carrying a key. Collection-bound " +
-                    $"{opKind} '{collectionOnlyOp.Name}' ({opMethod} /{name}/{collectionOnlyOp.Name}) " +
-                    "is mapped without a {key} segment, and resource-based authorization evaluates the " +
-                    "requirement against the entity loaded from that segment, so the requirement is " +
-                    "silently dropped. Use the coarse requirements (RequireAuthenticatedUser/" +
-                    "RequireRole/RequireClaim/RequirePolicy) for this operation, declare it with " +
-                    "BindEntityFunction/BindEntityAction so it carries a key, or scope the rule to a " +
-                    "category or named operation that has one.");
+                    ".RequireResource() and nothing else, and it governs the collection-bound " +
+                    $"{opKind} '{op.Name}' ({route}), whose route carries no key. Resource-based " +
+                    "authorization evaluates the requirement against the entity loaded from the " +
+                    "route's key segment, so on this route the requirement is dropped and NO " +
+                    "requirement is enforced at all. Add a coarse requirement to the rule " +
+                    "(RequireAuthenticatedUser/RequireRole/RequireClaim/RequirePolicy), declare the " +
+                    "operation with BindEntityFunction/BindEntityAction so it carries a key to " +
+                    "authorize against, or scope the rule with Invoke(\"Name\", ...) to the " +
+                    "operations that have one.");
             }
+
+            // Each placeholder appears EXACTLY once -- Microsoft.Extensions.Logging binds a template
+            // positionally. Repeated VALUES are passed again under a distinct name.
+            logger?.LogWarning(
+                "OhData: '{EntitySet}' authorizes the collection-bound {OperationKind} '{Operation}' " +
+                "with {Rule}, which declares .RequireResource() -- and that half is NOT applied on " +
+                "'{Route}'. Resource-based authorization evaluates the requirement against the entity " +
+                "loaded from the route's key segment, and a collection-bound operation is mapped " +
+                "without one, so there is no instance to evaluate against. The rule's coarse " +
+                "requirements DO gate this route, so what is silently dropped is the narrowing, not " +
+                "the gate: a caller who satisfies them reaches '{Operation2}' whatever a resource " +
+                "handler would have said about any row. If that instance check matters here, declare " +
+                "the operation with BindEntityFunction/BindEntityAction so it carries a key, or scope " +
+                "the rule with Invoke(\"Name\", ...) to the operations that have one. If the coarse " +
+                "requirements are the whole intent for '{Operation3}', drop .RequireResource() from " +
+                "the rule that governs it and this warning stops. See docs/authorization.md.",
+                name, opKind, op.Name, spelling, route, op.Name, op.Name);
         }
 
         // #465: a Search handler on a Priority-1 profile is DEAD CODE, and used to be advertised
