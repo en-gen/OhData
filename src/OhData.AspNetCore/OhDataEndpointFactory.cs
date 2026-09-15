@@ -3649,14 +3649,12 @@ internal static class OhDataEndpointFactory
 
             // #253: $orderby names are OData names — resolve to the CLR property by EDM name (honors
             // [JsonPropertyName]) and reject the renamed property's CLR name exactly as the main path.
-            if (navItemType is not null && !ODataPropertyNaming.IsKnownEdmName(navItemType, propName))
+            PropertyInfo? prop = null;
+            if (navItemType is not null && !ODataPropertyNaming.TryResolveEdmName(navItemType, propName, out prop))
             {
                 return (null, ODataError(400, "InvalidQueryOption",
                     $"Property '{propName}' does not exist on type '{navItemType.Name}'."));
             }
-            PropertyInfo? prop = navItemType is null
-                ? null
-                : ODataPropertyNaming.FindClrPropertyByEdmName(navItemType, propName);
 
             object? KeySelector(object item) => prop?.GetValue(item);
 

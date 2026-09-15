@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json.Serialization;
@@ -38,16 +39,33 @@ internal static class ODataPropertyNaming
     // Fold-in #7 (#325/#326 review, perf hygiene): FindClrPropertyByEdmName is now called per
     // navigation per entity from BOTH SerializeBounded and OmitUnexpandedNavigations (previously it
     // was mostly a startup/validation-time helper), so its GetProperties()+LINQ+attribute-lookup
-    // cost is now paid on the hot serialization path. Memoized per (type, edmName), matching this
-    // codebase's `s_`-prefixed static-cache convention (e.g. OhDataEndpointFactory's
-    // s_navRefKeyAccessorCache). Keyed on the exact string passed in (ordinal tuple equality) rather
-    // than a case-normalized key: callers overwhelmingly pass the canonical EDM name (navProp.Name),
-    // so this trades a theoretical extra cache entry for a differently-cased caller against not
-    // having to normalize (and risk a culture-sensitive ToUpper/ToLower bug) on every lookup —
-    // correctness (case-INSENSITIVE matching) is unaffected either way since it happens inside the
-    // cached computation, not in the key.
-    private static readonly ConcurrentDictionary<(Type Type, string EdmName), PropertyInfo?>
-        s_clrPropertyByEdmNameCache = new();
+    // cost is now paid on the hot serialization path.
+    //
+    // Keyed by TYPE, never by the caller's string: the key space is the registered model types, so
+    // no request value can grow it (#537). Both name maps are resolved once per type, which keeps
+    // lookups O(1) and calls ResolveEdmName's attribute walk once per property rather than per call.
+    private static readonly ConcurrentDictionary<Type, PropertyLookup> s_lookupCache = new();
+
+    private sealed record PropertyLookup(
+        IReadOnlyDictionary<string, PropertyInfo> ByEdmName,
+        IReadOnlyDictionary<string, PropertyInfo> ByClrName);
+
+    private static PropertyLookup GetLookup(Type type) => s_lookupCache.GetOrAdd(type, static t =>
+    {
+        PropertyInfo[] props = t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.GetIndexParameters().Length == 0)
+            .ToArray();
+
+        // First declaration wins in both maps, matching FirstOrDefault over GetProperties() order.
+        var byEdm = new Dictionary<string, PropertyInfo>(StringComparer.OrdinalIgnoreCase);
+        var byClr = new Dictionary<string, PropertyInfo>(StringComparer.OrdinalIgnoreCase);
+        foreach (PropertyInfo p in props)
+        {
+            byEdm.TryAdd(ResolveEdmName(p), p);
+            byClr.TryAdd(p.Name, p);
+        }
+        return new PropertyLookup(byEdm, byClr);
+    });
 
     /// <summary>
     /// Finds the CLR property of <paramref name="type"/> whose OData/EDM name
@@ -58,18 +76,13 @@ internal static class ODataPropertyNaming
     /// </summary>
     internal static PropertyInfo? FindClrPropertyByEdmName(Type type, string edmName)
     {
-        return s_clrPropertyByEdmNameCache.GetOrAdd((type, edmName), key =>
-        {
-            (Type t, string name) = key;
-            PropertyInfo[] props = t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(p => p.GetIndexParameters().Length == 0)
-                .ToArray();
+        PropertyLookup lookup = GetLookup(type);
 
-            // Prefer a property whose resolved EDM name matches (covers [JsonPropertyName] renames);
-            // fall back to a caller that already holds a CLR name (e.g. an un-renamed property).
-            return props.FirstOrDefault(p => string.Equals(ResolveEdmName(p), name, StringComparison.OrdinalIgnoreCase))
-                ?? props.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
-        });
+        // Prefer a property whose resolved EDM name matches (covers [JsonPropertyName] renames);
+        // fall back to a caller that already holds a CLR name (e.g. an un-renamed property).
+        return lookup.ByEdmName.TryGetValue(edmName, out PropertyInfo? byEdm) ? byEdm
+            : lookup.ByClrName.TryGetValue(edmName, out PropertyInfo? byClr) ? byClr
+            : null;
     }
 
     /// <summary>
@@ -81,7 +94,13 @@ internal static class ODataPropertyNaming
     /// exactly as the main <c>$select</c>/<c>$orderby</c> parser rejects it.
     /// </summary>
     internal static bool IsKnownEdmName(Type type, string edmName) =>
-        type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.GetIndexParameters().Length == 0)
-            .Any(p => string.Equals(ResolveEdmName(p), edmName, StringComparison.OrdinalIgnoreCase));
+        GetLookup(type).ByEdmName.ContainsKey(edmName);
+
+    /// <summary>
+    /// <see cref="IsKnownEdmName"/>'s strict EDM-name match, returning the property instead of a
+    /// bool, for a caller that needs both answers. Refuses exactly what
+    /// <see cref="IsKnownEdmName"/> refuses.
+    /// </summary>
+    internal static bool TryResolveEdmName(Type type, string edmName, out PropertyInfo? property) =>
+        GetLookup(type).ByEdmName.TryGetValue(edmName, out property);
 }

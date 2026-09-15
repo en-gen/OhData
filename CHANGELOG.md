@@ -645,6 +645,31 @@ status codes or headers.
 
 ### Fixed
 
+- **A memoizing name cache grew one entry per request-supplied casing, not per property (#537).**
+  `ODataPropertyNaming.FindClrPropertyByEdmName` caches on `(Type, string)`, on the stated invariant
+  that every caller passes a name already drawn from the model's own finite vocabulary. That was true
+  for twelve of its thirteen call sites (startup-sourced EDM/CLR names, or a `$expand` identifier the
+  OData parser has already resolved against the model) — false for the thirteenth. The navigation
+  `$orderby` route (`ApplyNavOrderBy`) ran an `IsKnownEdmName` gate and then a *separate*
+  `FindClrPropertyByEdmName` call over the same raw, unnormalized query-string token: the gate bounded
+  which *properties* could pass, but nothing bounded which *strings* reached the cache as keys.
+
+  Measured: 256 case spellings of one 8-letter property name (`Category`) each answered `200` and each
+  added its own permanent cache entry; a single request with 200 comma-separated spellings added 200
+  more in one round trip — reachable on a default configuration, with no capability flag or allowlist
+  in the way. An earlier attempt at this issue proposed documenting the cache as bounded; a measurement
+  against that branch showed the invariant false, refuting the doc-only fix before it shipped.
+
+  Fixed structurally rather than by capping: `ODataPropertyNaming`'s cache is now keyed by `Type`
+  alone. The key space is the app's own registered model types, fixed at startup — never a
+  client-supplied string — for all thirteen callers at once, not just the one that broke the
+  invariant. `ApplyNavOrderBy` also gained `TryResolveEdmName`, replacing its `IsKnownEdmName` +
+  `FindClrPropertyByEdmName` pair with one pass. `Issue537MemoCacheInvariantTests` pins the accepted
+  path — 256 differently cased requests for one property leave exactly one cache entry for its type
+  (ablation: reverting the fix leaves 256) — alongside the pre-existing rejected-name coverage. The
+  count is scoped to that type rather than totalled, because the caches are process-wide statics and
+  xUnit runs test classes in parallel.
+
 - **A `char` entity key now round-trips through the URL the server itself emits, under any culture
   (#677, #682).** `ODataEntityKeyUrlFormatter` has always single-quoted a `char` key, but
   `ODataKeyParser.Parse` had no `TypeCode.Char` case, so the quoted form fell through to
