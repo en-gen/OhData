@@ -23,7 +23,7 @@ namespace OhData.AspNetCore.Tests;
 // 4xx with zero server-side trace -- worse than the 500 it replaced.
 //
 // The fix narrows the arithmetic-fault handling to a small local helper
-// (EvaluateQueryWithArithmeticFaultGuard in OhDataEndpointFactory.cs) that wraps ONLY the
+// (EvaluateQueryWithArithmeticFaultGuard in QueryOptionGate.cs) that wraps ONLY the
 // enumeration/count of the $filter/$orderby-ApplyTo'd query, and only engages when the request
 // actually carries $filter or $orderby. This file proves the three concrete fixtures the review
 // used to demonstrate the regression now correctly 500 (logged), not 400.

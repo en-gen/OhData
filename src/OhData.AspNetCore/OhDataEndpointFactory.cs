@@ -2678,6 +2678,24 @@ internal static class OhDataEndpointFactory
         options.SelectExpand?.Validate(settings);
     }
 
+    // #402: the try scope is EXACTLY the construction and the catch is deliberately broad. Every
+    // failure inside it is a statement about the request URL, so 400 is right for the whole set --
+    // and the scope had to be tightened first, because the old whole-handler try also contains
+    // InvokeGetQueryableAsync, where a broad catch would relabel a database outage as a 400.
+    //
+    // Do NOT replace this with a type list. `$skiptoken=` throws ArgumentException from
+    // SkipTokenQueryOption's ctor, not ODataException, and the throw set of somebody else's
+    // constructors is not ours to enumerate. ODataException keeps its message pass-through so the
+    // empty-value cases stay byte-identical; anything else is generic + logged at Warning.
+    //
+    // #426: the ODataQueryContext is built HERE, per request, and this takes the IEdmModel rather
+    // than a context so no caller can hand it a shared one. ODataQueryOptions' constructor WRITES
+    // context.RequestContainer/Request and Initialize reads Request back off that field, so a shared
+    // context races and a valid request intermittently 400s. Measured 16-89 failures per 32,000
+    // constructions across 16 threads sharing one; 0 with a fresh one.
+    //
+    // The (IEdmModel, IEdmType, ODataPath) overload is not a cheap alternative -- it leaves
+    // ElementClrType null, which ODataQueryOptions<TEntity> throws on.
     private static bool TryBuildQueryOptions<TModel>(
         IEdmModel model, HttpContext ctx, ILogger? logger,
         [NotNullWhen(true)] out ODataQueryOptions<TModel>? options,

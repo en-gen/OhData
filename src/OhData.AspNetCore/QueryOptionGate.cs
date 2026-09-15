@@ -42,16 +42,17 @@ using Microsoft.OData.UriParser;
 namespace OhData;
 
 // Extracted from OhDataEndpointFactory (#671 phase 1, pure move): the query-option gate --
-// sigil/capability enforcement for every read route -- and the #494/#662 translation-fault
-// classifiers. Called from OhDataEndpointFactory as QueryOptionGate.Foo(...).
+// sigil/capability enforcement for every read route -- and the classifiers that decide whether a
+// query fault is the client's option's fault (400) or the server's (500): #358/#385 arithmetic,
+// #494/#662 provider translation. Called from OhDataEndpointFactory as QueryOptionGate.Foo(...).
 internal static class QueryOptionGate
 {
     // #358 (adversarial review R2, HIGH): signals that evaluating (enumerating/counting) a
     // $filter- or $orderby-ApplyTo'd query raised a client-triggerable arithmetic fault (div/mod
     // by zero, decimal overflow) -- thrown only by EvaluateQueryWithArithmeticFaultGuard below,
     // and caught by a dedicated clause on each collection-read route's OUTER try. A dedicated
-    // type rather than reusing Microsoft.OData.ODataException: several nearby try/catch blocks
-    // (the $expand-pushdown Include-fallback and pushed-query materialize sites) already catch
+    // type rather than reusing Microsoft.OData.ODataException: the $expand-pushdown Include-fallback
+    // and pushed-query materialize sites in OhDataEndpointFactory and ExpandEngine already catch
     // ODataException for an unrelated reason (provider translation failures) and rewrite it into
     // a different, $expand-specific message -- reusing ODataException here would let those catches
     // intercept and mask this fault instead of it reaching the route's own 400 InvalidQueryOption
@@ -116,8 +117,8 @@ internal static class QueryOptionGate
     // #494: signals that the underlying LINQ provider could not TRANSLATE the query shape the
     // request asked for -- thrown only by TranslateThenMaterialize below, and caught by the three
     // $expand-pushdown execution sites, which rewrite it into their own 400 message. A dedicated
-    // type for the same reason FilterArithmeticFaultException is one: the surrounding code already
-    // catches ODataException for other reasons.
+    // type for the same reason FilterArithmeticFaultException is one: the catch clauses around the
+    // call sites already catch ODataException for other reasons.
     internal sealed class QueryTranslationFailedException(Exception inner)
         : Exception(inner.Message, inner);
 
@@ -656,24 +657,6 @@ internal static class QueryOptionGate
         MaxOrderByNodeCount = source.MaxOrderByNodeCount,
     };
 
-    // #402: the try scope is EXACTLY the construction and the catch is deliberately broad. Every
-    // failure inside it is a statement about the request URL, so 400 is right for the whole set --
-    // and the scope had to be tightened first, because the old whole-handler try also contains
-    // InvokeGetQueryableAsync, where a broad catch would relabel a database outage as a 400.
-    //
-    // Do NOT replace this with a type list. `$skiptoken=` throws ArgumentException from
-    // SkipTokenQueryOption's ctor, not ODataException, and the throw set of somebody else's
-    // constructors is not ours to enumerate. ODataException keeps its message pass-through so the
-    // empty-value cases stay byte-identical; anything else is generic + logged at Warning.
-    //
-    // #426: the ODataQueryContext is built HERE, per request, and this takes the IEdmModel rather
-    // than a context so no caller can hand it a shared one. ODataQueryOptions' constructor WRITES
-    // context.RequestContainer/Request and Initialize reads Request back off that field, so a shared
-    // context races and a valid request intermittently 400s. Measured 16-89 failures per 32,000
-    // constructions across 16 threads sharing one; 0 with a fresh one.
-    //
-    // The (IEdmModel, IEdmType, ODataPath) overload is not a cheap alternative -- it leaves
-    // ElementClrType null, which ODataQueryOptions<TEntity> throws on.
     // #385: a literal zero divisor is refused BEFORE the query executes, so every provider gives the
     // same answer. #358 catches DivideByZeroException/OverflowException, which only fires where the
     // CLR evaluates the expression -- measured, the same URL split three ways: LINQ-to-Objects and
@@ -692,14 +675,14 @@ internal static class QueryOptionGate
     // and is still covered by #358's runtime guard where the CLR evaluates it.
     internal static string? FindLiteralZeroDivisor<TModel>(ODataQueryOptions<TModel> options)
     {
-        if (options.Filter?.FilterClause?.Expression is { } filter && QueryOptionGate.DividesByLiteralZero(filter))
+        if (options.Filter?.FilterClause?.Expression is { } filter && DividesByLiteralZero(filter))
         {
             return "$filter";
         }
 
         for (OrderByClause? clause = options.OrderBy?.OrderByClause; clause is not null; clause = clause.ThenBy)
         {
-            if (clause.Expression is { } expression && QueryOptionGate.DividesByLiteralZero(expression))
+            if (clause.Expression is { } expression && DividesByLiteralZero(expression))
             {
                 return "$orderby";
             }
@@ -708,7 +691,7 @@ internal static class QueryOptionGate
         return null;
     }
 
-    internal static bool DividesByLiteralZero(QueryNode node)
+    private static bool DividesByLiteralZero(QueryNode node)
     {
         switch (node)
         {
