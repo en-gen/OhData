@@ -505,22 +505,6 @@ public sealed class EntitySetDefaults
     public bool AllowDeepWrites { get; set; }
 
     /// <summary>
-    /// Renamed to <see cref="AllowDeepWrites"/> in 1.6.0. Kept as a forwarding property so an
-    /// assembly compiled against 1.5.0 keeps binding; it reads and writes
-    /// <see cref="AllowDeepWrites"/>, so the two can never disagree.
-    /// </summary>
-    // #457: see EntitySetProfile.AllowDeepInsert for why the name changed and why this member
-    // stays. One storage location, two names -- never two fields.
-    [Obsolete("Renamed to AllowDeepWrites: the flag governs nested-graph handling on every write " +
-              "verb -- deep insert (POST, OData §11.4.2.2) and deep update (PUT/PATCH, OData 4.01 " +
-              "§11.4.3.1) -- not deep insert alone. Forwards to AllowDeepWrites.")]
-    public bool AllowDeepInsert
-    {
-        get => AllowDeepWrites;
-        set => AllowDeepWrites = value;
-    }
-
-    /// <summary>
     /// Midpoint-rounding behavior for the <c>round()</c> canonical function (OData Part 2
     /// §5.1.1.9) on the <c>GetQueryable</c> pushdown path. Defaults to
     /// <c>OhData.RoundingMode.SpecCompliant</c> (round-half-away-from-zero, e.g.

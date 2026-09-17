@@ -278,27 +278,6 @@ public abstract class EntitySetProfile<TKey, TModel> : IEntitySetProfile, IVisit
     protected bool? RequestBodyNullabilityValidationEnabled { get; init; }
     private bool _resolvedRequestBodyNullabilityValidationEnabled = true;
 
-    /// <summary>
-    /// Renamed to <see cref="AllowDeepWrites"/> in 1.6.0. Kept as a forwarding property so an
-    /// assembly compiled against 1.5.0 keeps binding; it reads and writes
-    /// <see cref="AllowDeepWrites"/>, so the two can never disagree.
-    /// </summary>
-    // #457: the flag no longer governs the collection POST alone -- it governs nested-graph
-    // handling on every write verb, which is deep insert (§11.4.2.2) AND deep update
-    // (§11.4.3.1), two separately named spec features. A name saying only "insert" described one
-    // of them. Forwarding rather than duplicated state: there is one field, _resolvedAllowDeepWrites
-    // is resolved from AllowDeepWrites alone, and setting either property is setting the same
-    // storage. Removing it outright is the API break the PackageValidation gate against the 1.5.0
-    // baseline correctly rejects (CP0002), and this repo has no suppression file.
-    [Obsolete("Renamed to AllowDeepWrites: the flag governs nested-graph handling on every write " +
-              "verb -- deep insert (POST, OData §11.4.2.2) and deep update (PUT/PATCH, OData 4.01 " +
-              "§11.4.3.1) -- not deep insert alone. Forwards to AllowDeepWrites.")]
-    protected bool? AllowDeepInsert
-    {
-        get => AllowDeepWrites;
-        init => AllowDeepWrites = value;
-    }
-
     private string[]? _selectProperties;
     private string[]? _expandProperties;
     private string[]? _filterProperties;

@@ -41,6 +41,10 @@ All of this is mechanical, and the compiler finds every site for you.
       `AddDeltaProfilesFromAssemblyOf<T>()` beside your existing `AddProfilesFromAssemblyOf<T>()`:
       the entity-set scan no longer discovers delta profiles. Explicit `AddDeltaProfile<T>()` calls
       need nothing. `DeltaExtensions` (`IsChanged`/`TryGetChanged`) stays in the core.
+- [ ] **Four `[Obsolete]` 1.5.0-compat forwarders are gone** (#644): `EntitySetProfile.AllowDeepInsert`,
+      `EntitySetDefaults.AllowDeepInsert` (rename to `AllowDeepWrites`), and the seven-parameter
+      `OhDataQueryOptionsMetadata` constructor and `Deconstruct` overload (use the eight-parameter
+      ones, adding `TopSkipSupported`).
 
 `docs/error-handling.md` is the whole surface, and it is now reachable from the docsite nav.
 
@@ -553,6 +557,29 @@ status codes or headers.
   only … must keep starting"*, which is this defect verbatim pinned as correct behaviour. Its
   expectation is **inverted, not deleted**, and it asserts the #690 message rather than #486's —
   which is what still proves the GetById guard keys off the routes that attach the filter.
+
+- **⚠ BREAKING CHANGE — four `[Obsolete]` 1.5.0-compat forwarders are removed (#644).**
+  `EntitySetProfile.AllowDeepInsert`, `EntitySetDefaults.AllowDeepInsert` (both renamed
+  `AllowDeepWrites` in 1.6.0, #457) and the seven-parameter `OhDataQueryOptionsMetadata`
+  constructor and `Deconstruct` overload (both superseded by the eight-parameter, `TopSkipSupported`-
+  carrying pair, #467) existed for exactly one reason each comment on them said outright: removing
+  them is the `CP0002` an ApiCompat baseline against 1.5.0 correctly rejects, and this repo has never
+  had a suppression file.
+
+  **That baseline is not running this cycle.** `PackageValidationBaselineVersion` is commented out on
+  `OhData.AspNetCore` for the whole 2.0.0 cycle (#581) — ApiCompat can only diff against a *published*
+  version, and there is no 2.x package yet to diff against. Meanwhile 2.0.0 already breaks far more
+  than a rename: all eight handler delegates changed signature (#581), three again for nullability
+  (#641), and `SuccessTask` was removed outright (#633). Keeping a 1.6.0 rename-forwarder out of
+  deference to a gate that is not running, in a release breaking every handler in the framework, had
+  nothing left to defend it. A major is exactly when a deprecation is collected.
+
+  Migration: rename `AllowDeepInsert` to `AllowDeepWrites` wherever it appears (both properties read
+  and wrote the same storage, so the rename is mechanical); pass `TopSkipSupported` to the
+  `OhDataQueryOptionsMetadata` constructor, or use the eight-member `Deconstruct`. The three companion
+  packages (OpenApi, NSwag, Swashbuckle) already read `OhDataQueryOptionsMetadata` by property
+  (`.TopSkipSupported`, `.FilterEnabled`, …), never through either obsolete overload, so nothing in
+  this repo needed to change beyond the four removals.
 
 
 ### Added
