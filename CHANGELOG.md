@@ -104,11 +104,11 @@ status codes or headers.
   without the `$` sigil a custom query option; the `$`-optional scheme is a 4.01 feature
   (§13.2.1) OhData does not target. `Microsoft.AspNetCore.OData` enables it by default, so
   `?filter=Id eq 3`, `?top=1` and `?select=Name` were applied while `?apply=…` and `?search=…` were
-  silently ignored under a `200` with the full collection. All no-`$` keys are now ignored alike
-  (and echoed into `@odata.nextLink` like any other custom option); `?filter=x&$filter=y` no longer
+  silently ignored under a `200` with the full collection. All no-`$` keys are now custom options:
+  never applied, and echoed into `@odata.nextLink` like any other custom option; `?filter=x&$filter=y` no longer
   answers a generic `400`. **Remedy: spell the option with `$`** (`$filter`, `$top`, `$select`, …).
   `$`-prefixed names stay case-insensitive (`$Select`, `$TOP`). The host's own `ODataOptions` is not
-  modified.
+  modified, and the rule holds under `WithODataOptions` too.
 
 - **⚠ BREAKING CHANGE — a Priority-1 route refuses the system query options its profile does not
   honour (#475).** `GET /{Set}?$search=…` on a `GetODataQueryable` profile with no `$search` handling
@@ -766,6 +766,13 @@ status codes or headers.
 
 
 ### Fixed
+
+- **A `$` query key with leading whitespace was applied while every gate treated it as custom
+  (#718).** `Microsoft.AspNetCore.OData` trims each key before testing for `$`, OhData's sigil and
+  capability checks do not, so `?%20$filter=…` (also `+` and `%09`) was applied with every capability
+  flag off, and `?%20$apply=…` answered `200` with the full collection where `?$apply=…` is `501`.
+  `ODataQueryOptions` is now handed only the keys whose first character, untrimmed, is `$` or `@`.
+  A whitespace-prefixed key is a custom option: ignored, and echoed into `@odata.nextLink`.
 
 - **The structural-property read envelope was serialized under the host's `DictionaryKeyPolicy` (#713).**
   `GET /{Set}({key})/{Prop}` builds a `Dictionary` envelope and pre-rendered it with the registration's

@@ -88,7 +88,10 @@ asks the body to do: it describes the unimplemented functionality.
   the same reason. This includes the *names* of system options: `?filter=…`, `?top=1`,
   `?select=…`, `?apply=…` and `?search=…` are custom options, not shorthand for `$filter` and
   friends. OhData serves OData 4.0, where the `$`-optional scheme does not exist, so they are
-  ignored on every route (the response equals the one without them). Spell the option with `$`.
+  ignored on every route: the data is the same as without them, though the key is echoed into any
+  `@odata.nextLink` the server generates, like every custom option. The same goes for a `$` key
+  preceded by whitespace (`?%20$filter=…`, `?+$top=1`): it is not a system option. Spell the option
+  with `$`, with nothing before it.
 - **Parameter aliases** (§5.3) begin with `@`, not `$`, and are likewise untouched.
 - **Mixed-case spellings of real options.** `$Select` and `$TOP` are honoured, as they always have
   been. `Microsoft.AspNetCore.OData` lowercases an option name before matching it whenever the URI

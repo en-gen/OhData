@@ -2604,12 +2604,19 @@ internal static class OhDataEndpointFactory
         // if it ever does the group filter turns it into a logged 500 + OData error envelope.
         var context = new ODataQueryContext(model, typeof(TModel), null);
 
-        // #714: the optional-$ scheme is a 4.01 feature and OhData declares 4.0, so a key without
-        // `$` is a custom option. It is read off the request services, hence the scoped swap.
-        IServiceProvider hostServices = ctx.RequestServices;
+        // #714/#718: MS sees only the `$`/`@` keys (see SystemQueryKeyNarrowing) for the length of
+        // the construction. Restoring the QueryString, not just Query, matters: assigning Query
+        // rewrites the raw QueryString, and the server's own @odata.nextLink is built from it.
+        HttpRequest request = ctx.Request;
+        QueryString originalQueryString = request.QueryString;
+        IQueryCollection? narrowed = SystemQueryKeyNarrowing.Narrow(request.Query);
         try
         {
-            ctx.RequestServices = new DollarRequiredServiceProvider(hostServices);
+            if (narrowed is not null)
+            {
+                request.Query = narrowed;
+            }
+
             options = new ODataQueryOptions<TModel>(context, ctx.Request);
             error = null;
             return true;
@@ -2639,7 +2646,10 @@ internal static class OhDataEndpointFactory
         }
         finally
         {
-            ctx.RequestServices = hostServices;
+            if (narrowed is not null)
+            {
+                request.QueryString = originalQueryString;
+            }
         }
     }
 
