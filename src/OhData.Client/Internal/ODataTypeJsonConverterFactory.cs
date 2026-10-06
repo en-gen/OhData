@@ -72,7 +72,8 @@ internal sealed class ODataTypeJsonConverterFactory : JsonConverterFactory
             if (isType)
                 return reader.TokenType == JsonTokenType.String ? reader.GetString() : null;
 
-            reader.Skip();
+            // TrySkip, not Skip: on a stream the block is not final, though the row itself is buffered.
+            if (!reader.TrySkip()) return null;
         }
 
         return null;

@@ -89,6 +89,32 @@ public sealed class DerivedTypeMaterializationTests
     }
 
     [Fact]
+    public async Task LargeStreamedPage_ResolvesEveryRow()
+    {
+        // Bigger than System.Text.Json's stream buffer, so a row is read from a non-final block.
+        var body = new StringBuilder("{\"value\":[");
+        for (int i = 0; i < 2000; i++)
+        {
+            if (i > 0) body.Append(',');
+            body.Append(i % 2 == 0
+                ? $$"""{"Id":{{i}},"Name":"n{{i}}","Breed":"b{{i}}","@odata.type":"{{DogType}}"}"""
+                : "{\"Id\":" + i + ",\"Name\":\"n" + i + "\",\"Tags\":{\"a\":[1,2,{\"b\":3}]}}");
+        }
+
+        body.Append("]}");
+        var (client, _) = Make(body.ToString());
+
+        var rows = await client.For<Pet>("Pets").ToListAsync();
+
+        Assert.Equal(2000, rows.Count);
+        for (int i = 0; i < rows.Count; i++)
+        {
+            if (i % 2 == 0) Assert.Equal($"b{i}", Assert.IsType<Dog>(rows[i]).Breed);
+            else Assert.IsType<Pet>(rows[i]);
+        }
+    }
+
+    [Fact]
     public async Task TypeNameWithoutHash_IsAccepted()
     {
         var (client, _) = Make($$"""{"value":[{"Id":1,"Breed":"Lab","@odata.type":"{{DogType.TrimStart('#')}}"}]}""");
