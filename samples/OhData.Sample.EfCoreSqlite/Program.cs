@@ -23,7 +23,9 @@ builder.Services.AddOhData(o => o
     .AddEntitySetProfile<ProductProfile>()
     .AddEntitySetProfile<CategoryProfile>()
     .AddEntitySetProfile<TagProfile>()
-    .AddEntitySetProfile<ProductSummaryProfile>());
+    .AddEntitySetProfile<ProductSummaryProfile>()
+    .AddEntitySetProfile<OrderProfile>()
+    .AddDeltaProfile<OrderDeltaProfile>());
 
 var app = builder.Build();
 
@@ -38,3 +40,6 @@ using (IServiceScope scope = app.Services.CreateScope())
 app.MapOhData();
 
 app.Run();
+
+// Marker so the test project can boot this app with WebApplicationFactory<Program>.
+public partial class Program;

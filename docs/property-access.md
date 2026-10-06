@@ -90,6 +90,10 @@ and the immutable-key stubs.
 }
 ```
 
+A host-configured `DictionaryKeyPolicy` does not rename the `@odata.context` or `value` keys. For a
+complex property whose value contains a dictionary, the same policy is also not applied to those
+nested dictionary keys.
+
 | Condition | Status |
 |---|---|
 | Entity not found | `404 Not Found` |

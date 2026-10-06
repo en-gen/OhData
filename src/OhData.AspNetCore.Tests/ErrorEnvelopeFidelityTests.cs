@@ -151,6 +151,11 @@ public class ErrorEnvelopeFidelityTests
             "/odata/Widgets", HttpStatusCode.OK,
             "{\"@odata.context\":\"http://localhost/odata/$metadata#Widgets\",\"value\":[{\"Id\":1,\"Name\":\"Sprocket\"},{\"Id\":2,\"Name\":\"Cog\"}]}"
         },
+        {
+            // The structural-property read envelope (#713) -- a pre-rendered Dictionary too.
+            "/odata/Widgets(1)/Name", HttpStatusCode.OK,
+            "{\"@odata.context\":\"http://localhost/odata/$metadata#Widgets(1)/Name\",\"value\":\"Sprocket\"}"
+        },
     };
 
     [Theory]
@@ -199,6 +204,7 @@ public class ErrorEnvelopeFidelityTests
     [InlineData("/odata/Widgets?$orderby=Name")]
     [InlineData("/odata/BoundWidgets/GetByName?name=Alpha")]
     [InlineData("/odata/BoundWidgets/DoubleCount?factor=2")]
+    [InlineData("/odata/Widgets(1)/Name")]
     public async Task HostDictionaryKeyPolicy_DoesNotReshapeAnyEnvelope(string url)
     {
         // Pre-fix, with SnakeCaseUpper: {"ERROR":{"CODE":...}} on every error response and

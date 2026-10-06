@@ -38,6 +38,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The shared bench server (TPH hierarchy, typed rejections); see BenchModels.cs. -->
+    <Compile Include="..\OhData.ClientTestBench.AspNetCore\BenchModels.cs" Link="BenchModels.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\OhData.Client\OhData.Client.csproj" />
     <ProjectReference Include="..\OhData.AspNetCore\OhData.AspNetCore.csproj" />
   </ItemGroup>

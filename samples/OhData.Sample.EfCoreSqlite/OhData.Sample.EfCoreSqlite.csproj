@@ -12,6 +12,9 @@
          the current code. In your own app, reference the NuGet package instead:
              dotnet add package EnGen.OhData.AspNetCore -->
     <ProjectReference Include="..\..\src\OhData.AspNetCore\OhData.AspNetCore.csproj" />
+    <!-- Read mapping (MappedEntitySetProfile) and write mapping (DeltaProfile); NuGet:
+             dotnet add package EnGen.OhData.AspNetCore.Mapper -->
+    <ProjectReference Include="..\..\src\OhData.AspNetCore.Mapper\OhData.AspNetCore.Mapper.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -95,6 +95,8 @@ public class ShopDbContext(DbContextOptions<ShopDbContext> options) : DbContext(
     public DbSet<Product> Products => Set<Product>();
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<Tag> Tags => Set<Tag>();
+    public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<Order> Orders => Set<Order>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -131,5 +133,9 @@ public class ShopDbContext(DbContextOptions<ShopDbContext> options) : DbContext(
         // approximate type — fine for a demo, but a real money app should store cents as an
         // integer or use the provider's default decimal-as-TEXT mapping instead.
         modelBuilder.Entity<Product>().Property(p => p.Price).HasConversion<double>();
+
+        // Unlike Product, Order keeps its navigation in the EF model: the mapped OrderProfile's
+        // `Customer.Name` paths need EF to know the relationship.
+        modelBuilder.Entity<Order>().HasOne(o => o.Customer).WithMany().HasForeignKey(o => o.CustomerId);
     }
 }

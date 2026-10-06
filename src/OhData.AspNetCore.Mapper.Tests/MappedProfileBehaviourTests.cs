@@ -260,6 +260,26 @@ public sealed class MappedProfileBehaviourTests
         Assert.Contains("UnsupportedQueryOption", body, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("filter=Title%20eq%20%27Hammer%27")]
+    [InlineData("top=1")]
+    [InlineData("%20$filter=Title%20eq%20%27Hammer%27")]
+    [InlineData("+$top=1")]
+    public async Task ABareOrWhitespacePrefixedOption_IsCustom_AndDollarFilterStillApplies(string option)
+    {
+        await using MappedTestHost host = await MappedTestHost.StartAsync();
+
+        string baseline = await (await host.Client.GetAsync($"/odata/{MappedTestHost.Mapped}"))
+            .Content.ReadAsStringAsync();
+        HttpResponseMessage ignored = await host.Client.GetAsync($"/odata/{MappedTestHost.Mapped}?{option}");
+        Assert.Equal(HttpStatusCode.OK, ignored.StatusCode);
+        Assert.Equal(baseline, await ignored.Content.ReadAsStringAsync());
+
+        JsonObject applied = await host.GetJsonAsync(
+            $"/odata/{MappedTestHost.Mapped}?$filter=Title%20eq%20%27Hammer%27");
+        Assert.Single(applied["value"]!.AsArray());
+    }
+
     [Fact]
     public async Task ATopBeyondMaxTop_Is400_BeforeTheHandlerRuns()
     {

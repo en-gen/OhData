@@ -2604,8 +2604,19 @@ internal static class OhDataEndpointFactory
         // if it ever does the group filter turns it into a logged 500 + OData error envelope.
         var context = new ODataQueryContext(model, typeof(TModel), null);
 
+        // #714/#718: MS sees only the `$`/`@` keys (see SystemQueryKeyNarrowing) for the length of
+        // the construction. Restoring the QueryString, not just Query, matters: assigning Query
+        // rewrites the raw QueryString, and the server's own @odata.nextLink is built from it.
+        HttpRequest request = ctx.Request;
+        QueryString originalQueryString = request.QueryString;
+        IQueryCollection? narrowed = SystemQueryKeyNarrowing.Narrow(request.Query);
         try
         {
+            if (narrowed is not null)
+            {
+                request.Query = narrowed;
+            }
+
             options = new ODataQueryOptions<TModel>(context, ctx.Request);
             error = null;
             return true;
@@ -2632,6 +2643,13 @@ internal static class OhDataEndpointFactory
             error = ODataError(400, "InvalidQueryOption",
                 "One or more system query options in the request URL could not be parsed.");
             return false;
+        }
+        finally
+        {
+            if (narrowed is not null)
+            {
+                request.QueryString = originalQueryString;
+            }
         }
     }
 
@@ -3625,6 +3643,14 @@ internal static class OhDataEndpointFactory
                         return optionsError;
                     }
 
+                    // #714: the profile's own ApplyTo re-reads the real query, which the narrowing no
+                    // longer covers; see SystemQueryKeyNarrowing.FindNormalizedCollision.
+                    if (SystemQueryKeyNarrowing.FindNormalizedCollision(ctx.Request, options) is { } collidingOption)
+                    {
+                        return ODataError(400, "InvalidQueryOption",
+                            $"The query string names {collidingOption} more than once under different spellings.");
+                    }
+
                     // #385: refuse a literal zero divisor BEFORE execution, so every provider gives
                     // the same answer instead of three (400 / 200-empty / 500).
                     if (QueryOptionGate.FindLiteralZeroDivisor(options) is { } zeroDivisorOption)
@@ -3925,7 +3951,7 @@ internal static class OhDataEndpointFactory
                             : queryable;
                         countQ = ApplyRoundingMode(countQ, source.RoundingMode);
                         odataCount = QueryOptionGate.CountRootQuery(
-                            queryable, countQ, options, logger, source.EntitySetName);
+                            queryable, countQ, (ODataQueryOptions<TModel>)options, logger, source.EntitySetName);
                     }
 
                     // Apply filter/orderby/skip/top without $select so TModel shape is preserved.
@@ -4378,7 +4404,7 @@ internal static class OhDataEndpointFactory
                         // $expand path has answered since #494, not a 500.
                         items = QueryOptionGate.MaterializeRootQuery(
                             queryable, () => ApplySelectPushdown(filtered),
-                            options, logger, source.EntitySetName);
+                            (ODataQueryOptions<TModel>)options, logger, source.EntitySetName);
                     }
 
                     // Gap 3: compute nextLink when MaxTop (or preferred page size) is set and page is full.
@@ -4823,7 +4849,7 @@ internal static class OhDataEndpointFactory
                             : q;
                         filtered = ApplyRoundingMode(filtered, source.RoundingMode);
                         long queryableCount = QueryOptionGate.CountRootQuery(
-                            q, filtered, options, logger, source.EntitySetName);
+                            q, filtered, (ODataQueryOptions<TModel>)options, logger, source.EntitySetName);
                         return Results.Content(queryableCount.ToString(), "text/plain");
                     }
                     if (options.Filter is not null)
@@ -6837,12 +6863,12 @@ internal static class OhDataEndpointFactory
                             // #252: serialize through the owned options so a complex-typed property's
                             // nested member names follow OhData's casing (PascalCase by default) instead
                             // of leaking the host's HttpJsonOptions policy via the Results.Ok pipeline.
-                            // (Envelope keys are Dictionary keys — unaffected by PropertyNamingPolicy —
-                            // and primitive values have no member names, so both are unchanged.)
+                            // (PropertyNamingPolicy does not touch the envelope keys; primitive values have no member names.)
                             // #396: `value` is a raw CLR property value (a complex type's whole
                             // sub-graph, for a complex property), so this envelope is serialized
                             // inside the filter's scope rather than deferred. See PreRenderedJson.
-                            return PreRenderedJson(envelope, jsonOptions ?? _pascalCaseSerializerOptions);
+                            // Envelope keys are contractual: EnvelopeOptions clears the host's DictionaryKeyPolicy.
+                            return PreRenderedJson(envelope, EnvelopeOptions(jsonOptions ?? _pascalCaseSerializerOptions));
                         }
                         catch (ODataKeyFormatException ex)
                         {
