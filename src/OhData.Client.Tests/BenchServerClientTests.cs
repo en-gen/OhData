@@ -69,13 +69,17 @@ public sealed class BenchServerClientTests : IAsyncLifetime
     [Fact]
     public async Task AnnotatedPage_ExposesODataTypeForDerivedRowsOnly()
     {
-        var page = await _client.For<Award>("Awards").OrderBy(a => a.Id).ToAnnotatedPageAsync();
+        var page = await _client.For<Award>("Awards")
+            .Expand("Nominations")
+            .OrderBy(a => a.Id)
+            .ToAnnotatedPageAsync();
 
         string? TypeOf(int index) =>
             page.Entries[index].Annotations.TryGetValue("@odata.type", out var el) ? el.GetString() : null;
 
         Assert.Equal("#" + typeof(AcademyAward).FullName, TypeOf(0));
         Assert.Equal("#" + typeof(FestivalAward).FullName, TypeOf(1));
+        Assert.Single(page.Entries[1].Entity.Nominations);
         Assert.Null(TypeOf(2)); // runtime type == declared type, so §4.5.3 does not require it
     }
 

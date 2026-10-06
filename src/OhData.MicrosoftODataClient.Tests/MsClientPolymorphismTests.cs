@@ -63,6 +63,9 @@ public sealed class MsClientPolymorphismTests : IAsyncLifetime
         var academy = Assert.IsType<AcademyAward>(rows[0]);
         Assert.Equal("67th Academy Awards", academy.Ceremony);
         Assert.Equal(3, academy.Nominations.Count);
-        Assert.IsType<FestivalAward>(rows[1]);
+        var festival = Assert.IsType<FestivalAward>(rows[1]);
+        Assert.Equal("Cannes", festival.Festival);
+        Assert.Equal("Clint Eastwood", festival.Jury);
+        Assert.Single(festival.Nominations);
     }
 }
