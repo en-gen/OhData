@@ -20,6 +20,9 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
     <!-- Codecov Test Analytics: JUnit XML report per test assembly; CI invokes the junit logger (ci.yml). -->
     <PackageReference Include="JunitXml.TestLogger" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
+    <!-- Transitive pin: clears GHSA-2m69-gcr7-jv3q (SQLitePCLRaw < 2.1.12) under TreatWarningsAsErrors. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
     <PackageReference Include="Microsoft.OData.Client" Version="8.*" />
     <PackageReference Include="Microsoft.OData.ModelBuilder" Version="2.*" />
     <PackageReference Include="xunit" Version="2.*" />
@@ -27,6 +30,11 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The shared bench server (TPH hierarchy, typed rejections); see BenchModels.cs. -->
+    <Compile Include="..\OhData.ClientTestBench.AspNetCore\BenchModels.cs" Link="BenchModels.cs" />
   </ItemGroup>
 
   <ItemGroup>
