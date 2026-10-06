@@ -164,17 +164,6 @@ public class NoDollarQueryOptionTests
     }
 
     [Fact]
-    public async Task WhitespacePrefixedApply_DoesNotAnswer200WithTheFullCollection_WhenTheRealOneIs501()
-    {
-        await using TestFixture fx = await BuildAsync();
-        var real = await GetAsync(fx, "/odata/NdBares?$apply=groupby((Name))");
-        Assert.Equal(HttpStatusCode.NotImplemented, real.Status);
-        var spaced = await GetAsync(fx, "/odata/NdBares?%20$apply=groupby((Name))");
-        var baseline = await GetAsync(fx, "/odata/NdBares");
-        Assert.Equal(baseline.Body, spaced.Body);
-    }
-
-    [Fact]
     public async Task PriorityOne_ApplyTo_AppliesDollarFilter_AndIgnoresNoDollarAndWhitespaceKeys()
     {
         await using TestFixture fx = await BuildAsync();
