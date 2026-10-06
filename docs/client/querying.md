@@ -156,6 +156,20 @@ Asks the server for at most that many entities per page. It is sent as a `Prefer
 
 Any `Prefer` values already on the `HttpClient`'s default headers (such as `odata.include-annotations="*"`) are sent too; a default `odata.maxpagesize` yields to this one. Throws `ArgumentOutOfRangeException` for a value below 1.
 
+## `WithQueryOption`
+
+```csharp
+.WithQueryOption("$search", "red & blue")
+.WithQueryOption("tenant", "acme")
+// → $search=red%20%26%20blue&tenant=acme
+```
+
+Appends one option the typed builder does not model: a custom option, or a system option such as `$search` or `$apply`. Options follow the ones the builder composes, in the order added, and go on the collection, `/$count` and keyed (`Key(...)`) requests of the query, including `GetPropertyAsync` and `GetRawValueAsync`. Name and value are URL-encoded; a leading `$` stays literal.
+
+The server decides what the option means: an unimplemented system option is a `501` (`ODataClientException`, `ODataErrorCode` `UnsupportedQueryOption`), and an unknown custom option is ignored. A page reached through a server-issued `@odata.nextLink` carries whatever that link carries.
+
+Throws `ArgumentException` for a blank name and for `$filter`, `$select`, `$expand`, `$orderby`, `$top`, `$skip` and `$count` (case-insensitive, whitespace trimmed), which have typed methods above. A name without the `$` is a custom option under OData 4.0 and is sent as given.
+
 ## `IncludeCount`
 
 Appends `$count=true` to the request so the server includes the total matching count in the response envelope. The count is available on `ODataPage<T>.TotalCount` when you call [`ToPageAsync`](terminal-operations.md#topageasync):

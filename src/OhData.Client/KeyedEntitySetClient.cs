@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using OhData.Client.Internal;
@@ -16,22 +17,30 @@ namespace OhData.Client;
 public sealed class KeyedEntitySetClient<T> where T : class
 {
     private readonly ODataHttpClient _http;
-    private readonly OhDataClientOptions _options;
+    private readonly JsonNamingPolicy? _namingPolicy;
     private readonly string _entityUrl;
+    private readonly string? _customQuery;
     private readonly string _url;
 
     internal KeyedEntitySetClient(
         ODataHttpClient http,
-        OhDataClientOptions options,
+        JsonNamingPolicy? namingPolicy,
         string entitySetName,
         string formattedKey,
         string? select = null,
-        string? expand = null)
+        string? expand = null,
+        string? customQuery = null)
     {
         _http = http;
-        _options = options;
+        _namingPolicy = namingPolicy;
         _entityUrl = $"{entitySetName}({formattedKey})";
-        _url = BuildUrl(entitySetName, formattedKey, select, expand);
+        _customQuery = customQuery;
+
+        var parts = new List<string>(3);
+        if (select is not null) parts.Add($"$select={Uri.EscapeDataString(select)}");
+        if (expand is not null) parts.Add($"$expand={Uri.EscapeDataString(expand)}");
+        if (customQuery is not null) parts.Add(customQuery);
+        _url = parts.Count == 0 ? _entityUrl : $"{_entityUrl}?{string.Join('&', parts)}";
     }
 
     /// <summary>
@@ -128,7 +137,7 @@ public sealed class KeyedEntitySetClient<T> where T : class
     public Task<string?> GetRawValueAsync(
         Expression<Func<T, object?>> property, CancellationToken ct = default)
     {
-        string url = BuildPropertyUrl(property);
+        string url = BuildPropertyUrl(property, "/$value");
         MemberInfo member = ODataMemberName.FindDirectMember(property, PropertyReadError);
         if ((member as PropertyInfo)?.PropertyType == typeof(byte[]) || (member as FieldInfo)?.FieldType == typeof(byte[]))
         {
@@ -137,20 +146,21 @@ public sealed class KeyedEntitySetClient<T> where T : class
                 nameof(property));
         }
 
-        return _http.GetRawValueAsync(url + "/$value", ct);
+        return _http.GetRawValueAsync(url, ct);
     }
 
     private const string PropertyReadError =
         "A property read addresses one direct member of the entity (e.g. x => x.Note); chained paths are not supported.";
 
-    private string BuildPropertyUrl(LambdaExpression property)
+    private string BuildPropertyUrl(LambdaExpression property, string segmentSuffix = "")
     {
         ArgumentNullException.ThrowIfNull(property);
         string name = ODataMemberName.ResolveDirectMember(
             property,
-            _options.JsonOptions.PropertyNamingPolicy,
+            _namingPolicy,
             PropertyReadError);
-        return $"{_entityUrl}/{name}";
+        string url = $"{_entityUrl}/{name}{segmentSuffix}";
+        return _customQuery is null ? url : $"{url}?{_customQuery}";
     }
 
     /// <summary>
@@ -186,15 +196,4 @@ public sealed class KeyedEntitySetClient<T> where T : class
         => _http.DeleteAsync(_url, ifMatch, ct);
 
     internal string BuildEntityUrl() => _url;
-
-    private static string BuildUrl(string entitySetName, string formattedKey, string? select, string? expand)
-    {
-        string baseUrl = $"{entitySetName}({formattedKey})";
-        if (select is null && expand is null) return baseUrl;
-
-        var parts = new List<string>(2);
-        if (select is not null) parts.Add($"$select={Uri.EscapeDataString(select)}");
-        if (expand is not null) parts.Add($"$expand={Uri.EscapeDataString(expand)}");
-        return $"{baseUrl}?{string.Join('&', parts)}";
-    }
 }

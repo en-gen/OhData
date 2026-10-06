@@ -600,6 +600,13 @@ status codes or headers.
   `@odata.nextLink` request of the same walk, on both the plain and the annotation-preserving
   readers. `n` must be at least 1 (`ArgumentOutOfRangeException`). `docs/client/querying.md`.
 
+- **`OhData.Client`: `query.WithQueryOption(name, value)` sends an option the typed builder does not
+  model (#710).** A custom option, or a system option such as `$search`/`$apply`, URL-encoded and appended
+  after the composed ones on the collection, `/$count` and every keyed request (`Key(...)`). The `$`-prefixed
+  names the builder composes (`$filter`, `$select`, `$expand`, `$orderby`, `$top`, `$skip`, `$count`,
+  case-insensitive, whitespace trimmed) are refused with `ArgumentException`; a name without the `$`
+  is a custom option and is sent as given. `docs/client/querying.md`.
+
 - **`OhData.Client`: `Key(k).GetPropertyAsync(x => x.Prop)` and `GetRawValueAsync(x => x.Prop)` read one
   property (#709).** The first reads `GET /{Set}(key)/{Prop}` typed from the response's `value` member
   (a `200` body that is not an object carrying `value` throws `JsonException`); the second reads

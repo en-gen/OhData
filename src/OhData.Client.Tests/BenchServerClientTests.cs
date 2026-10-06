@@ -156,16 +156,4 @@ public sealed class BenchServerClientTests : IAsyncLifetime
         Assert.Equal(5, unpaged.Items.Count);
         Assert.Null(unpaged.NextLink);
     }
-
-    // -- 501 for an unimplemented system option ------------------------------------------------------------------
-
-    [Fact]
-    public async Task UnimplementedSystemOption_Is501OnTheWire()
-    {
-        // Raw HTTP bench check; client-side coverage is #710.
-        using var raw = await _server.Http.GetAsync("Gadgets?$apply=groupby((Name))");
-
-        Assert.Equal(HttpStatusCode.NotImplemented, raw.StatusCode);
-        Assert.Contains("UnsupportedQueryOption", await raw.Content.ReadAsStringAsync());
-    }
 }
