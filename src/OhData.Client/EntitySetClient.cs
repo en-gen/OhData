@@ -25,7 +25,16 @@ public sealed class EntitySetClient<T> where T : class
         string? Expand = null,
         int? Top = null,
         int? Skip = null,
-        bool WithCount = false);
+        bool WithCount = false,
+        int? MaxPageSize = null,
+        IReadOnlyList<KeyValuePair<string, string>>? CustomOptions = null);
+
+    // `$`-prefixed names the typed builder composes itself. A key without the '$' is a custom
+    // query option under OData 4.0, so only the sigil spellings are refused.
+    private static readonly HashSet<string> s_composedOptionNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "filter", "select", "expand", "orderby", "top", "skip", "count",
+    };
 
     private readonly ODataHttpClient _http;
     private readonly OhDataClientOptions _options;
@@ -226,13 +235,74 @@ public sealed class EntitySetClient<T> where T : class
     /// </summary>
     public EntitySetClient<T> IncludeCount() => With(_state with { WithCount = true });
 
+    /// <summary>
+    /// Asks the server for at most <paramref name="count"/> entities per page with
+    /// <c>Prefer: odata.maxpagesize=<paramref name="count"/></c> (OData Part 1 §8.2.8.5), on every page
+    /// request of this query including <c>@odata.nextLink</c> follow-ups.
+    /// </summary>
+    /// <remarks>
+    /// A preference, not a limit: the server may return fewer. Distinct from <see cref="Top"/>, which
+    /// bounds the total. The caller's default <c>Prefer</c> tokens are kept; a default
+    /// <c>odata.maxpagesize</c> yields to this one.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="count"/> is less than 1.</exception>
+    public EntitySetClient<T> MaxPageSize(int count)
+    {
+        if (count < 1) throw new ArgumentOutOfRangeException(nameof(count), count, "maxpagesize must be >= 1.");
+        return With(_state with { MaxPageSize = count });
+    }
+
+    /// <summary>
+    /// Appends one query option the typed builder does not model — a custom option, or a system option
+    /// such as <c>$search</c> or <c>$apply</c> — to the collection, <c>/$count</c> and keyed
+    /// (<see cref="Key(object)"/>) requests of this query, after the options the builder composes, in the
+    /// order added. Name and value are URL-encoded; a leading <c>$</c> stays literal.
+    /// </summary>
+    /// <remarks>
+    /// The server decides what the option means: an unimplemented system option is refused (<c>501</c>,
+    /// <see cref="ODataClientException"/>) and an unknown custom option is ignored. Whether a page reached
+    /// through a server-issued <c>@odata.nextLink</c> still carries it is the server's link to decide.
+    /// </remarks>
+    /// <param name="name">The option name, e.g. <c>$search</c> or <c>tenant</c>; surrounding whitespace is trimmed.</param>
+    /// <param name="value">The option value, unencoded.</param>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="name"/> is blank, or is a <c>$</c>-prefixed option the typed builder composes (<c>$filter</c>,
+    /// <c>$select</c>, <c>$expand</c>, <c>$orderby</c>, <c>$top</c>, <c>$skip</c>, <c>$count</c>; case-insensitive).
+    /// A name without the <c>$</c> is a custom option and is sent as given.
+    /// </exception>
+    /// <exception cref="ArgumentNullException"><paramref name="name"/> or <paramref name="value"/> is null.</exception>
+    public EntitySetClient<T> WithQueryOption(string name, string value)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        ArgumentNullException.ThrowIfNull(value);
+        string trimmed = name.Trim();
+        if (trimmed.Length == 0)
+            throw new ArgumentException("A query option name must not be blank.", nameof(name));
+        if (trimmed.StartsWith('$') && s_composedOptionNames.Contains(trimmed[1..]))
+        {
+            throw new ArgumentException(
+                $"'{name}' is composed by the client's own builder methods; use those instead of WithQueryOption.",
+                nameof(name));
+        }
+
+        var options = new List<KeyValuePair<string, string>>(_state.CustomOptions ?? []) { new(trimmed, value) };
+        return With(_state with { CustomOptions = options });
+    }
+
     // ── Key transition ──────────────────────────────────────────────────────────
 
     /// <summary>
     /// Transitions to a single-entity builder for the given key.
     /// </summary>
     public KeyedEntitySetClient<T> Key(object keyValue)
-        => new(_http, _entitySetName, ODataKeyFormatter.Format(keyValue), _state.Select, _state.Expand);
+        => new(
+            _http,
+            _options.JsonOptions.PropertyNamingPolicy,
+            _entitySetName,
+            ODataKeyFormatter.Format(keyValue),
+            _state.Select,
+            _state.Expand,
+            CustomOptionsQuery());
 
     /// <summary>
     /// Transitions to a single-entity builder for the given key.
@@ -252,7 +322,7 @@ public sealed class EntitySetClient<T> where T : class
     public async IAsyncEnumerable<T> ToAsyncEnumerable(
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        ODataPage<T> page = await _http.GetPageAsync<T>(BuildCollectionUrl(), ct);
+        ODataPage<T> page = await _http.GetPageAsync<T>(BuildCollectionUrl(), _state.MaxPageSize, ct);
         foreach (T item in page.Items)
             yield return item;
 
@@ -260,7 +330,7 @@ public sealed class EntitySetClient<T> where T : class
         while (page.NextLink is not null)
         {
             ThrowIfHopCapExceeded(++hops);
-            page = await _http.GetPageByAbsoluteUrlAsync<T>(page.NextLink, ct);
+            page = await _http.GetPageByAbsoluteUrlAsync<T>(page.NextLink, _state.MaxPageSize, ct);
             foreach (T item in page.Items)
                 yield return item;
         }
@@ -310,7 +380,7 @@ public sealed class EntitySetClient<T> where T : class
     /// </para>
     /// </remarks>
     public Task<ODataAnnotatedPage<T>> ToAnnotatedPageAsync(CancellationToken ct = default)
-        => _http.GetAnnotatedPageAsync<T>(BuildCollectionUrl(), ct);
+        => _http.GetAnnotatedPageAsync<T>(BuildCollectionUrl(), _state.MaxPageSize, ct);
 
     /// <summary>
     /// Annotation-preserving counterpart of <see cref="ToAsyncEnumerable"/>: lazily fetches all
@@ -326,7 +396,7 @@ public sealed class EntitySetClient<T> where T : class
     public async IAsyncEnumerable<ODataAnnotatedEntity<T>> ToAnnotatedAsyncEnumerable(
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        ODataAnnotatedPage<T> page = await _http.GetAnnotatedPageAsync<T>(BuildCollectionUrl(), ct);
+        ODataAnnotatedPage<T> page = await _http.GetAnnotatedPageAsync<T>(BuildCollectionUrl(), _state.MaxPageSize, ct);
         foreach (ODataAnnotatedEntity<T> entry in page.Entries)
             yield return entry;
 
@@ -336,7 +406,7 @@ public sealed class EntitySetClient<T> where T : class
             ThrowIfHopCapExceeded(++hops);
             // OriginalString, not ToString(): a server-issued link is followed verbatim as an opaque
             // URL, and ToString() can decode percent-escapes that were deliberately encoded.
-            page = await _http.GetAnnotatedPageByAbsoluteUrlAsync<T>(page.NextLink.OriginalString, ct);
+            page = await _http.GetAnnotatedPageByAbsoluteUrlAsync<T>(page.NextLink.OriginalString, _state.MaxPageSize, ct);
             foreach (ODataAnnotatedEntity<T> entry in page.Entries)
                 yield return entry;
         }
@@ -378,7 +448,7 @@ public sealed class EntitySetClient<T> where T : class
     /// matching count (before any <c>$top</c>/<c>$skip</c>).
     /// </summary>
     public Task<ODataPage<T>> ToPageAsync(CancellationToken ct = default)
-        => _http.GetPageAsync<T>(With(_state with { WithCount = true }).BuildCollectionUrl(), ct);
+        => _http.GetPageAsync<T>(With(_state with { WithCount = true }).BuildCollectionUrl(), _state.MaxPageSize, ct);
 
     /// <summary>
     /// POST a new entity. Returns the created entity as returned by the server
@@ -448,7 +518,8 @@ public sealed class EntitySetClient<T> where T : class
             _state.Expand is null &&
             !_state.Top.HasValue &&
             !_state.Skip.HasValue &&
-            !_state.WithCount)
+            !_state.WithCount &&
+            _state.CustomOptions is null)
         {
             return _entitySetName;
         }
@@ -461,6 +532,7 @@ public sealed class EntitySetClient<T> where T : class
         if (_state.Top.HasValue) parts.Add($"$top={_state.Top.Value}");
         if (_state.Skip.HasValue) parts.Add($"$skip={_state.Skip.Value}");
         if (_state.WithCount) parts.Add("$count=true");
+        AppendCustomOptions(parts);
 
         return parts.Count == 0
             ? _entitySetName
@@ -469,8 +541,34 @@ public sealed class EntitySetClient<T> where T : class
 
     internal string BuildCountUrl()
     {
-        if (_state.Filter is null) return $"{_entitySetName}/$count";
-        return $"{_entitySetName}/$count?$filter={Uri.EscapeDataString(_state.Filter)}";
+        var parts = new List<string>(2);
+        if (_state.Filter is not null) parts.Add($"$filter={Uri.EscapeDataString(_state.Filter)}");
+        AppendCustomOptions(parts);
+        return parts.Count == 0
+            ? $"{_entitySetName}/$count"
+            : $"{_entitySetName}/$count?{string.Join('&', parts)}";
+    }
+
+    private void AppendCustomOptions(List<string> parts)
+    {
+        if (_state.CustomOptions is null) return;
+        foreach (KeyValuePair<string, string> option in _state.CustomOptions)
+        {
+            // A leading '$' is control syntax, not data: keep it literal so $search reads as $search.
+            string name = option.Key.StartsWith('$')
+                ? "$" + Uri.EscapeDataString(option.Key[1..])
+                : Uri.EscapeDataString(option.Key);
+            parts.Add($"{name}={Uri.EscapeDataString(option.Value)}");
+        }
+    }
+
+    /// <summary>The custom options as a query string (no leading <c>?</c>), or null when there are none.</summary>
+    private string? CustomOptionsQuery()
+    {
+        if (_state.CustomOptions is null) return null;
+        var parts = new List<string>(_state.CustomOptions.Count);
+        AppendCustomOptions(parts);
+        return string.Join('&', parts);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────

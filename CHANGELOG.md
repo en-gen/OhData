@@ -612,6 +612,26 @@ status codes or headers.
   now opens by presenting the package as two halves, read and write, instead of describing reads as
   already covered by projection.
 
+- **`OhData.Client`: `query.MaxPageSize(n)` requests a page size with `Prefer: odata.maxpagesize=n`
+  (#708).** The client sent only `return=minimal`, so a page size could be requested only through a
+  default header on the `HttpClient`. The preference is sent on the first request and on every
+  `@odata.nextLink` request of the same walk, on both the plain and the annotation-preserving
+  readers. `n` must be at least 1 (`ArgumentOutOfRangeException`). `docs/client/querying.md`.
+
+- **`OhData.Client`: `query.WithQueryOption(name, value)` sends an option the typed builder does not
+  model (#710).** A custom option, or a system option such as `$search`/`$apply`, URL-encoded and appended
+  after the composed ones on the collection, `/$count` and every keyed request (`Key(...)`). The `$`-prefixed
+  names the builder composes (`$filter`, `$select`, `$expand`, `$orderby`, `$top`, `$skip`, `$count`,
+  case-insensitive, whitespace trimmed) are refused with `ArgumentException`; a name without the `$`
+  is a custom option and is sent as given. `docs/client/querying.md`.
+
+- **`OhData.Client`: `Key(k).GetPropertyAsync(x => x.Prop)` and `GetRawValueAsync(x => x.Prop)` read one
+  property (#709).** The first reads `GET /{Set}(key)/{Prop}` typed from the response's `value` member
+  (a `200` body that is not an object carrying `value` throws `JsonException`); the second reads
+  `/{Prop}/$value` as unparsed text and refuses a `byte[]` member. `204` reads as `default`/`null`, and a
+  `404` follows `NotFoundBehavior`, so ask for a nullable `TProp` to tell a missing entity from a zero.
+  `docs/client/single-entity.md`.
+
 - **A new package: `EnGen.OhData.AspNetCore.Mapper` — serve an API model that differs from the EF
   entity, with the query still running in SQL (#651).** OhData shipped *half* of API-model / entity
   separation and said so nowhere: `DeltaProfile` maps a DTO write onto an entity, and nothing at all

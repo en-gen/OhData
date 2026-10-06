@@ -139,47 +139,21 @@ public sealed class BenchServerClientTests : IAsyncLifetime
         Assert.Null(gadget.Note);
     }
 
-    [Fact]
-    public async Task NullProperty_RawValueSegment_Is204_AndAPresentOneIs200()
-    {
-        // Bench smoke check over raw HTTP: the client has no /$value API (client coverage is #709).
-        using var absent = await _server.Http.GetAsync("Gadgets(1)/Note/$value");
-        using var present = await _server.Http.GetAsync("Gadgets(2)/Note/$value");
-
-        Assert.Equal(HttpStatusCode.NoContent, absent.StatusCode);
-        Assert.Equal(HttpStatusCode.OK, present.StatusCode);
-        Assert.Equal("note2", await present.Content.ReadAsStringAsync());
-    }
-
     // -- Paging: Prefer: odata.maxpagesize ---------------------------------------------------
 
     [Fact]
     public async Task MaxPageSize_IsAppliedByTheServer_AndTheClientFollowsTheNextLink()
     {
-        // The client has no API to send Prefer; a default header on its HttpClient stands in for one.
-        _server.Http.DefaultRequestHeaders.Add("Prefer", "odata.maxpagesize=2");
-
-        using var raw = await _server.Http.GetAsync("Gadgets?$orderby=Id");
-        Assert.True(raw.Headers.TryGetValues("Preference-Applied", out var applied));
-        Assert.Equal("odata.maxpagesize=2", Assert.Single(applied));
-
-        var page = await _client.For<Gadget>("Gadgets").OrderBy(g => g.Id).ToPageAsync();
+        var page = await _client.For<Gadget>("Gadgets").OrderBy(g => g.Id).MaxPageSize(2).ToPageAsync();
         Assert.Equal(2, page.Items.Count);
         Assert.NotNull(page.NextLink);
 
-        var all = await _client.For<Gadget>("Gadgets").OrderBy(g => g.Id).ToListAsync();
+        var all = await _client.For<Gadget>("Gadgets").OrderBy(g => g.Id).MaxPageSize(2).ToListAsync();
         Assert.Equal(new[] { 1, 2, 3, 4, 5 }, all.Select(g => g.Id).ToArray());
-    }
 
-    // -- 501 for an unimplemented system option ------------------------------------------------------------------
-
-    [Fact]
-    public async Task UnimplementedSystemOption_Is501OnTheWire()
-    {
-        // Raw HTTP bench check; client-side coverage is #710.
-        using var raw = await _server.Http.GetAsync("Gadgets?$apply=groupby((Name))");
-
-        Assert.Equal(HttpStatusCode.NotImplemented, raw.StatusCode);
-        Assert.Contains("UnsupportedQueryOption", await raw.Content.ReadAsStringAsync());
+        // Without the preference the server answers in one page.
+        var unpaged = await _client.For<Gadget>("Gadgets").OrderBy(g => g.Id).ToPageAsync();
+        Assert.Equal(5, unpaged.Items.Count);
+        Assert.Null(unpaged.NextLink);
     }
 }

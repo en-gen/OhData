@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq.Expressions;
+using System.Reflection;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using OhData.Client.Internal;
@@ -14,17 +17,30 @@ namespace OhData.Client;
 public sealed class KeyedEntitySetClient<T> where T : class
 {
     private readonly ODataHttpClient _http;
+    private readonly JsonNamingPolicy? _namingPolicy;
+    private readonly string _entityUrl;
+    private readonly string? _customQuery;
     private readonly string _url;
 
     internal KeyedEntitySetClient(
         ODataHttpClient http,
+        JsonNamingPolicy? namingPolicy,
         string entitySetName,
         string formattedKey,
         string? select = null,
-        string? expand = null)
+        string? expand = null,
+        string? customQuery = null)
     {
         _http = http;
-        _url = BuildUrl(entitySetName, formattedKey, select, expand);
+        _namingPolicy = namingPolicy;
+        _entityUrl = $"{entitySetName}({formattedKey})";
+        _customQuery = customQuery;
+
+        var parts = new List<string>(3);
+        if (select is not null) parts.Add($"$select={Uri.EscapeDataString(select)}");
+        if (expand is not null) parts.Add($"$expand={Uri.EscapeDataString(expand)}");
+        if (customQuery is not null) parts.Add(customQuery);
+        _url = parts.Count == 0 ? _entityUrl : $"{_entityUrl}?{string.Join('&', parts)}";
     }
 
     /// <summary>
@@ -85,6 +101,69 @@ public sealed class KeyedEntitySetClient<T> where T : class
         => _http.GetSingleIfChangedAsync<T>(_url, ifNoneMatch, ct);
 
     /// <summary>
+    /// GET <c>/{EntitySet}(key)/{Property}</c> — one structural property, typed, read from the response's
+    /// <c>value</c> member.
+    /// </summary>
+    /// <typeparam name="TProp">The property's type. Use a nullable type (<c>x =&gt; (int?)x.Id</c>) to tell a missing entity from a zero value.</typeparam>
+    /// <param name="property">A direct member access on <typeparamref name="T"/>, e.g. <c>x =&gt; x.Note</c>.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// <see langword="default"/> for 204 No Content or a <c>null</c> value, and for a 404 under
+    /// <see cref="NotFoundBehavior.ReturnNull"/>: a missing entity, a missing property and an unknown route
+    /// all follow <see cref="OhDataClientOptions.NotFoundBehavior"/>.
+    /// </returns>
+    /// <exception cref="ArgumentException"><paramref name="property"/> is not a direct member access.</exception>
+    /// <exception cref="System.Text.Json.JsonException">A 200 body is not an object carrying <c>value</c>.</exception>
+    /// <exception cref="ODataClientException">Any non-success status, including 404 under <see cref="NotFoundBehavior.Throw"/>.</exception>
+    public Task<TProp?> GetPropertyAsync<TProp>(
+        Expression<Func<T, TProp>> property, CancellationToken ct = default)
+        => _http.GetPropertyAsync<TProp>(BuildPropertyUrl(property), ct);
+
+    /// <summary>
+    /// GET <c>/{EntitySet}(key)/{Property}/$value</c> — the property's raw text, not parsed.
+    /// </summary>
+    /// <param name="property">A direct member access on <typeparamref name="T"/>, e.g. <c>x =&gt; x.Note</c>.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// <see langword="null"/> for 204 No Content (a <c>null</c> property) and for a 404 under
+    /// <see cref="NotFoundBehavior.ReturnNull"/>; as with <see cref="GetPropertyAsync{TProp}"/>, a missing
+    /// entity, property or route all follow <see cref="OhDataClientOptions.NotFoundBehavior"/>.
+    /// </returns>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="property"/> is not a direct member access, or is a <c>byte[]</c> (raw binary cannot be
+    /// read as text; use <see cref="GetPropertyAsync{TProp}"/>).
+    /// </exception>
+    /// <exception cref="ODataClientException">Any non-success status, including 404 under <see cref="NotFoundBehavior.Throw"/>.</exception>
+    public Task<string?> GetRawValueAsync(
+        Expression<Func<T, object?>> property, CancellationToken ct = default)
+    {
+        string url = BuildPropertyUrl(property, "/$value");
+        MemberInfo member = ODataMemberName.FindDirectMember(property, PropertyReadError);
+        if ((member as PropertyInfo)?.PropertyType == typeof(byte[]) || (member as FieldInfo)?.FieldType == typeof(byte[]))
+        {
+            throw new ArgumentException(
+                $"'{member.Name}' is binary: its raw /$value cannot be read as text. Use GetPropertyAsync, which decodes it.",
+                nameof(property));
+        }
+
+        return _http.GetRawValueAsync(url, ct);
+    }
+
+    private const string PropertyReadError =
+        "A property read addresses one direct member of the entity (e.g. x => x.Note); chained paths are not supported.";
+
+    private string BuildPropertyUrl(LambdaExpression property, string segmentSuffix = "")
+    {
+        ArgumentNullException.ThrowIfNull(property);
+        string name = ODataMemberName.ResolveDirectMember(
+            property,
+            _namingPolicy,
+            PropertyReadError);
+        string url = $"{_entityUrl}/{name}{segmentSuffix}";
+        return _customQuery is null ? url : $"{url}?{_customQuery}";
+    }
+
+    /// <summary>
     /// PUT <c>/{EntitySet}(key)</c> with a full entity replacement.
     /// Optionally supply an If-Match ETag for optimistic concurrency or set
     /// <paramref name="preferMinimal"/> to request a 204 No Content response.
@@ -117,15 +196,4 @@ public sealed class KeyedEntitySetClient<T> where T : class
         => _http.DeleteAsync(_url, ifMatch, ct);
 
     internal string BuildEntityUrl() => _url;
-
-    private static string BuildUrl(string entitySetName, string formattedKey, string? select, string? expand)
-    {
-        string baseUrl = $"{entitySetName}({formattedKey})";
-        if (select is null && expand is null) return baseUrl;
-
-        var parts = new List<string>(2);
-        if (select is not null) parts.Add($"$select={Uri.EscapeDataString(select)}");
-        if (expand is not null) parts.Add($"$expand={Uri.EscapeDataString(expand)}");
-        return $"{baseUrl}?{string.Join('&', parts)}";
-    }
 }
