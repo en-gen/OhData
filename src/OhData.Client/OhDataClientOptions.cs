@@ -44,11 +44,7 @@ public sealed class OhDataClientOptions
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    /// <summary>
-    /// Explicit <c>@odata.type</c> registrations for derived types whose EDM name is not their CLR full
-    /// name. Reading a declared base type materializes each row as the derived type its
-    /// <c>@odata.type</c> names without any registration when the name is the derived type's full name.
-    /// </summary>
+    /// <summary>Explicit <c>@odata.type</c> registrations; see <see cref="ODataDerivedTypes"/>.</summary>
     public ODataDerivedTypes DerivedTypes { get; } = new();
 
     /// <summary>

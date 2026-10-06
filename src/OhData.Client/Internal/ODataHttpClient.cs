@@ -20,8 +20,8 @@ internal sealed class ODataHttpClient
     private readonly HttpClient _http;
     private readonly OhDataClientOptions _options;
 
-    // Reads go through a private copy of the caller's options that also resolves @odata.type; writes
-    // keep using _readJson untouched.
+    // Reads use a private copy of the caller's options that also resolves @odata.type; writes use
+    // _options.JsonOptions as given.
     private readonly JsonSerializerOptions _readJson;
 
     internal ODataHttpClient(HttpClient http, OhDataClientOptions options)

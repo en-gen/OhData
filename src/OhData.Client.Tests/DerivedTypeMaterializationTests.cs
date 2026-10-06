@@ -13,51 +13,58 @@ namespace OhData.Client.Tests;
 // (hand-written bodies) so they can cover what the bench model cannot: key order, a nested
 // polymorphic collection, an unknown type, a renamed namespace and the write request body.
 
-internal class Pet
-{
-    public int Id { get; set; }
-    public string Name { get; set; } = "";
-}
-
-internal class Dog : Pet
-{
-    public string Breed { get; set; } = "";
-}
-
-internal class Cat : Pet
-{
-    public bool Indoor { get; set; }
-}
-
-internal class Household
-{
-    public int Id { get; set; }
-    public List<Pet> Pets { get; set; } = [];
-    public Pet? Favourite { get; set; }
-}
-
-internal sealed class ScriptedHandler(string body, string contentType = "application/json") : HttpMessageHandler
-{
-    public string? LastRequestBody { get; private set; }
-
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-    {
-        LastRequestBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(ct);
-        return new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent(body, Encoding.UTF8, contentType),
-        };
-    }
-}
-
 public sealed class DerivedTypeMaterializationTests
 {
-    private static string DogType => "#" + typeof(Dog).FullName;
-    private static string CatType => "#" + typeof(Cat).FullName;
-
-    private static (OhDataClient Client, ScriptedHandler Handler) Make(string body, OhDataClientOptions? options = null)
+    internal class Pet
     {
-        var handler = new ScriptedHandler(body);
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+    }
+
+    internal class Dog : Pet
+    {
+        public string Breed { get; set; } = "";
+    }
+
+    internal class Cat : Pet
+    {
+        public bool Indoor { get; set; }
+    }
+
+    internal class Household
+    {
+        public int Id { get; set; }
+        public List<Pet> Pets { get; set; } = [];
+        public Pet? Favourite { get; set; }
+    }
+
+    internal sealed class Plain
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+    }
+
+    private sealed class Stub(string body) : HttpMessageHandler
+    {
+        public string? LastRequestBody { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            LastRequestBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(ct);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            };
+        }
+    }
+
+    // The server's default EDM name: namespace + simple name, whatever the CLR nesting.
+    private static string DogType => "#" + typeof(Dog).Namespace + "." + nameof(Dog);
+    private static string CatType => "#" + typeof(Cat).Namespace + "." + nameof(Cat);
+
+    private static (OhDataClient Client, Stub Handler) Make(string body, OhDataClientOptions? options = null)
+    {
+        var handler = new Stub(body);
         var http = new HttpClient(handler) { BaseAddress = new System.Uri("http://localhost/odata/") };
         return (new OhDataClient(http, options), handler);
     }
@@ -84,7 +91,7 @@ public sealed class DerivedTypeMaterializationTests
     [Fact]
     public async Task TypeNameWithoutHash_IsAccepted()
     {
-        var (client, _) = Make($$"""{"value":[{"Id":1,"Breed":"Lab","@odata.type":"{{typeof(Dog).FullName}}"}]}""");
+        var (client, _) = Make($$"""{"value":[{"Id":1,"Breed":"Lab","@odata.type":"{{DogType.TrimStart('#')}}"}]}""");
 
         var rows = await client.For<Pet>("Pets").ToListAsync();
 
@@ -189,10 +196,4 @@ public sealed class DerivedTypeMaterializationTests
 
         Assert.Equal("w", rows[0].Name);
     }
-}
-
-internal sealed class Plain
-{
-    public int Id { get; set; }
-    public string Name { get; set; } = "";
 }
