@@ -84,11 +84,11 @@ asks the body to do: it describes the unimplemented functionality.
 
 The `501`/`400` test and OhData's startup checks are the same question — *does any valid
 configuration produce this?* At request time, no → `501`, yes → `400`. At startup, a setting that
-no valid configuration could mean (a duplicate bound-operation name, a route collision, a named
+no valid configuration could mean (duplicate bound-operation names at one binding level, a route collision, a named
 authorization rule that matches no operation) **throws**, so the problem is fixed before the first
 request. A setting that is unusual but may be exactly what you intended (a navigation into a
-stricter entity set, an `Ignore()`d property still in the EDM under `AdvancedConfigure`, a wire shape
-that changes with open types) is allowed and logs a **warning** at `MapOhData()`, so a configuration
+stricter entity set, an `Ignore()`d property still in the EDM under `AdvancedConfigure`, an open-type
+wire-shape change for a model that passes startup validation) is allowed and logs a **warning** at `MapOhData()`, so a configuration
 that may be correct is not refused.
 
 ## What is *not* touched
