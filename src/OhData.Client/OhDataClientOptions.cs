@@ -44,6 +44,9 @@ public sealed class OhDataClientOptions
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
+    /// <summary>Explicit <c>@odata.type</c> registrations; see <see cref="ODataDerivedTypes"/>.</summary>
+    public ODataDerivedTypes DerivedTypes { get; } = new();
+
     /// <summary>
     /// Controls how 404 Not Found responses are handled for single-entity GET operations.
     /// Default is <see cref="NotFoundBehavior.ReturnNull"/>.

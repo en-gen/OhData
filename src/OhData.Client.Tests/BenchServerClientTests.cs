@@ -83,7 +83,7 @@ public sealed class BenchServerClientTests : IAsyncLifetime
         Assert.Null(TypeOf(2)); // runtime type == declared type, so §4.5.3 does not require it
     }
 
-    [Fact(Skip = "#707: OhData.Client ignores @odata.type")]
+    [Fact]
     public async Task Collection_OfBaseType_MaterializesEachRowAsItsODataType()
     {
         var rows = await _client.For<Award>("Awards").OrderBy(a => a.Id).ToListAsync();
@@ -91,6 +91,41 @@ public sealed class BenchServerClientTests : IAsyncLifetime
         Assert.IsType<AcademyAward>(rows[0]);
         Assert.IsType<FestivalAward>(rows[1]);
         Assert.IsType<Award>(rows[2]);
+    }
+
+    [Fact]
+    public async Task SingleByKey_OnBaseSet_MaterializesTheDerivedType()
+    {
+        Award? award = await _client.For<Award>("Awards").Key(1).GetAsync();
+
+        AcademyAward derived = Assert.IsType<AcademyAward>(award);
+        Assert.Equal("67th Academy Awards", derived.Ceremony);
+        Assert.True(derived.IsWinner);
+    }
+
+    [Fact]
+    public async Task BaseRows_UnderExpand_MaterializeDerivedTypesAndKeepNominations()
+    {
+        var rows = await _client.For<Award>("Awards")
+            .Expand("Nominations")
+            .OrderBy(a => a.Id)
+            .ToListAsync();
+
+        Assert.IsType<AcademyAward>(rows[0]);
+        Assert.Equal(3, rows[0].Nominations.Count);
+        Assert.IsType<FestivalAward>(rows[1]);
+        Assert.Equal("Cannes", ((FestivalAward)rows[1]).Festival);
+    }
+
+    [Fact]
+    public async Task AnnotatedPage_OfBaseType_MaterializesDerivedTypesAndKeepsAnnotations()
+    {
+        var page = await _client.For<Award>("Awards").OrderBy(a => a.Id).ToAnnotatedPageAsync();
+
+        Assert.IsType<AcademyAward>(page.Entries[0].Entity);
+        Assert.IsType<FestivalAward>(page.Entries[1].Entity);
+        Assert.IsType<Award>(page.Entries[2].Entity);
+        Assert.True(page.Entries[0].Annotations.TryGetValue("@odata.type", out _));
     }
 
     // -- Typed rejections ----------------------------------------------------------------
