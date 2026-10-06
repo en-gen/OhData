@@ -36,6 +36,24 @@ var keyed = client.For<Product>().Key<int>(42);
 Product? product = await client.For<Product>().Key(42).GetAsync();
 ```
 
+## Read one property
+
+```csharp
+// GET /Products(42)/Note  -> typed, from the response's "value" member
+string? note = await client.For<Product>().Key(42).GetPropertyAsync(x => x.Note);
+
+// GET /Products(42)/Note/$value  -> the raw text
+string? raw = await client.For<Product>().Key(42).GetRawValueAsync(x => x.Note);
+```
+
+The selector must be a direct member access on the entity; the wire name follows `[JsonPropertyName]`, then the configured naming policy. `GetPropertyAsync` throws a `JsonException` for a `200` body that is not an object carrying `value`. `GetRawValueAsync` returns the body text unparsed, and refuses a `byte[]` member with `ArgumentException` — read that one with `GetPropertyAsync`, which decodes it.
+
+Both return `default`/`null` on `204 No Content` (a `null` property). A `404` — missing entity, missing property or unknown route alike — follows `OhDataClientOptions.NotFoundBehavior`, as `GetAsync` does. So a missing entity and a stored `0` are indistinguishable through a non-nullable `TProp`; ask for a nullable one to tell them apart:
+
+```csharp
+int? year = await client.For<Product>().Key(42).GetPropertyAsync(x => (int?)x.Year);  // null => missing entity or null property; 0 is a real zero
+```
+
 ## `GetAnnotatedAsync`
 
 The annotation-preserving counterpart of `GetAsync`. Returns the entity together with the OData

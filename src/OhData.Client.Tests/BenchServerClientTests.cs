@@ -139,18 +139,6 @@ public sealed class BenchServerClientTests : IAsyncLifetime
         Assert.Null(gadget.Note);
     }
 
-    [Fact]
-    public async Task NullProperty_RawValueSegment_Is204_AndAPresentOneIs200()
-    {
-        // Bench smoke check over raw HTTP: the client has no /$value API (client coverage is #709).
-        using var absent = await _server.Http.GetAsync("Gadgets(1)/Note/$value");
-        using var present = await _server.Http.GetAsync("Gadgets(2)/Note/$value");
-
-        Assert.Equal(HttpStatusCode.NoContent, absent.StatusCode);
-        Assert.Equal(HttpStatusCode.OK, present.StatusCode);
-        Assert.Equal("note2", await present.Content.ReadAsStringAsync());
-    }
-
     // -- Paging: Prefer: odata.maxpagesize ---------------------------------------------------
 
     [Fact]

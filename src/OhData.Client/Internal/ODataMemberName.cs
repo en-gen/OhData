@@ -29,14 +29,17 @@ internal static class ODataMemberName
     }
 
     /// <summary>
-    /// Resolves the wire name of a single DIRECT member of <typeparamref name="T"/> from a
-    /// member-access lambda, stripping the boxing <c>Convert</c> wrapper that appears when the
-    /// lambda returns <c>object?</c>. Throws <see cref="ArgumentException"/> carrying
-    /// <paramref name="errorMessage"/> when the expression is chained (e.g. <c>x => x.Category.Name</c>)
-    /// rather than direct (e.g. <c>x => x.Id</c>).
+    /// Resolves the wire name of a single DIRECT member from a member-access lambda of any return type,
+    /// stripping the boxing <c>Convert</c> wrapper that appears when the lambda returns <c>object?</c>.
+    /// Throws <see cref="ArgumentException"/> carrying <paramref name="errorMessage"/> when the expression
+    /// is chained (e.g. <c>x => x.Category.Name</c>) rather than direct (e.g. <c>x => x.Id</c>).
     /// </summary>
-    internal static string ResolveDirectMember<T>(
-        Expression<Func<T, object?>> expr, JsonNamingPolicy? namingPolicy, string errorMessage)
+    internal static string ResolveDirectMember(
+        LambdaExpression expr, JsonNamingPolicy? namingPolicy, string errorMessage)
+        => Resolve(FindDirectMember(expr, errorMessage), namingPolicy);
+
+    /// <summary>The member a direct member-access lambda names; see <see cref="ResolveDirectMember"/>.</summary>
+    internal static MemberInfo FindDirectMember(LambdaExpression expr, string errorMessage)
     {
         Expression body = expr.Body;
         while (body is UnaryExpression u
@@ -49,7 +52,7 @@ internal static class ODataMemberName
             && member.Expression is ParameterExpression p
             && p == expr.Parameters[0])
         {
-            return Resolve(member.Member, namingPolicy);
+            return member.Member;
         }
 
         throw new ArgumentException(errorMessage);

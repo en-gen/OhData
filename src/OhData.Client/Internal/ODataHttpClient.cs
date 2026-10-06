@@ -313,6 +313,42 @@ internal sealed class ODataHttpClient
         return await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct);
     }
 
+    // ── GET single property / raw value ─────────────────────────────────────────
+
+    internal async Task<TProp?> GetPropertyAsync<TProp>(string url, CancellationToken ct)
+    {
+        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (await IsAbsentAsync(response, url, ct)) return default;
+        if (response.StatusCode == HttpStatusCode.NoContent) return default;
+
+        var envelope = await response.Content
+            .ReadFromJsonAsync<ODataPropertyResponse<TProp>>(_options.JsonOptions, ct);
+        if (envelope is null)
+            throw new JsonException("The property response body was null; expected an object with a 'value' member.");
+        return envelope.Value;
+    }
+
+    internal async Task<string?> GetRawValueAsync(string url, CancellationToken ct)
+    {
+        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (await IsAbsentAsync(response, url, ct)) return null;
+        if (response.StatusCode == HttpStatusCode.NoContent) return null;
+        return await response.Content.ReadAsStringAsync(ct);
+    }
+
+    /// <summary>404 per <see cref="OhDataClientOptions.NotFoundBehavior"/>; any other failure throws.</summary>
+    private async Task<bool> IsAbsentAsync(HttpResponseMessage response, string url, CancellationToken ct)
+    {
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (_options.NotFoundBehavior == NotFoundBehavior.Throw)
+                throw await ODataClientException.FromResponseAsync(response, url, ct);
+            return true;
+        }
+        await EnsureSuccessAsync(response, url, ct);
+        return false;
+    }
+
     // ── GET $count ──────────────────────────────────────────────────────────────
 
     internal async Task<long> GetCountAsync(string url, CancellationToken ct)

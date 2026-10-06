@@ -500,7 +500,7 @@ internal sealed class RecordingHandler : HttpMessageHandler
 }
 
 /// <summary>One read-only bench server shared by a test class that never mutates it.</summary>
-internal sealed class BenchServerFixture : Xunit.IAsyncLifetime
+public sealed class BenchServerFixture : Xunit.IAsyncLifetime
 {
     public OhData.ClientTestBench.BenchServer Server { get; private set; } = null!;
     public OhDataClient Client { get; private set; } = null!;

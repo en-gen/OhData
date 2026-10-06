@@ -600,6 +600,13 @@ status codes or headers.
   `@odata.nextLink` request of the same walk, on both the plain and the annotation-preserving
   readers. `n` must be at least 1 (`ArgumentOutOfRangeException`). `docs/client/querying.md`.
 
+- **`OhData.Client`: `Key(k).GetPropertyAsync(x => x.Prop)` and `GetRawValueAsync(x => x.Prop)` read one
+  property (#709).** The first reads `GET /{Set}(key)/{Prop}` typed from the response's `value` member
+  (a `200` body that is not an object carrying `value` throws `JsonException`); the second reads
+  `/{Prop}/$value` as unparsed text and refuses a `byte[]` member. `204` reads as `default`/`null`, and a
+  `404` follows `NotFoundBehavior`, so ask for a nullable `TProp` to tell a missing entity from a zero.
+  `docs/client/single-entity.md`.
+
 - **A new package: `EnGen.OhData.AspNetCore.Mapper` — serve an API model that differs from the EF
   entity, with the query still running in SQL (#651).** OhData shipped *half* of API-model / entity
   separation and said so nowhere: `DeltaProfile` maps a DTO write onto an entity, and nothing at all
