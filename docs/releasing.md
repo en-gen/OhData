@@ -114,6 +114,16 @@ reject the release.
 > **not Git Bash**, where MSYS path conversion rewrites `/nocache` into a filesystem path and the flag is
 > silently dropped, so every run returns the same misleading answer.
 
+**Before step 1, run the aggregate pre-flight.** Per-PR review judges each change on its own; this
+checks the release as a whole.
+
+- **CHANGELOG coverage:** compare `git log <last-tag>..origin/develop --oneline` against the
+  `## [Unreleased]` section and confirm every merged PR that changes behaviour is present — breaking
+  changes above all, since a consumer upgrading reads the CHANGELOG to find them.
+- **Benchmark figures:** confirm the figures published in `docs/performance.md` and the README are
+  stamped with a recent commit, and re-measure any that predate changes to the code path they
+  describe.
+
 1. Update `CHANGELOG.md`: retitle the pending section to `## [X.Y.Z] - <today>` and leave a fresh empty
    `## [Unreleased]` above it. Merge via PR to `develop` as usual.
 2. Docs-site gate: confirm this release's `docs-site/` and `docs/` reflect the API and features shipping

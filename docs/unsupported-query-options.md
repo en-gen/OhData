@@ -75,6 +75,17 @@ asks the body to do: it describes the unimplemented functionality.
 > different things — *"no configuration of this endpoint will ever do that"* versus *"this endpoint
 > could, and is not offering it"*.
 
+## One question, at runtime and at startup
+
+The `501`/`400` test and OhData's startup checks are the same question — *does any valid
+configuration produce this?* At request time, no -> `501`, yes -> `400`. At startup, a setting that
+no valid configuration could mean (a duplicate bound-operation name, a route collision, a named
+authorization rule that matches no operation) **throws**, so the problem is fixed before the first
+request. A setting that is unusual but may be exactly what you intended (a navigation into a
+stricter entity set, an `Ignore()`d property still in the EDM under `AdvancedConfigure`, a wire shape
+that changes with open types) is allowed and logs a **warning** at `MapOhData()`, so a configuration
+that may be correct is not refused.
+
 > **⚠ BREAKING for `$apply`/`$compute`/`$index`/`$deltatoken`.** Those four have answered
 > `400 UnsupportedQueryOption` since 1.0.0 and now answer `501`. The error **code** and the message
 > **bytes** are unchanged, so a client matching on the envelope keeps working; code branching on
@@ -101,7 +112,9 @@ asks the body to do: it describes the unimplemented functionality.
   `GET /{prefix}/$metadata` are ungated: `GET /odata?$unknown=1` answers `200` with the service
   document. None of them builds a link, so none can echo an option back into one. The
   property writes are ungated *consistently with the entity writes* — `PUT|PATCH|DELETE
-  /{Set}({key})` are not gated either, so no two routes over one resource disagree.
+  /{Set}({key})` are not gated either, so query options are ignored the same way across every
+  write route. The split is along the verb: a read and a write over one property do answer
+  differently (`GET …/{Prop}?$unknown=1` is `501`, `PATCH …/{Prop}?$unknown=1` is `200`).
 
   The structural-property **reads** are gated too:
   `GET /{Set}({key})/{Prop}` and its `/$value` implement `$format` and nothing else, so every other
