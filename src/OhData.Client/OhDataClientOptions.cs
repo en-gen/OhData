@@ -45,6 +45,13 @@ public sealed class OhDataClientOptions
     };
 
     /// <summary>
+    /// Explicit <c>@odata.type</c> registrations for derived types whose EDM name is not their CLR full
+    /// name. Reading a declared base type materializes each row as the derived type its
+    /// <c>@odata.type</c> names without any registration when the name is the derived type's full name.
+    /// </summary>
+    public ODataDerivedTypes DerivedTypes { get; } = new();
+
+    /// <summary>
     /// Controls how 404 Not Found responses are handled for single-entity GET operations.
     /// Default is <see cref="NotFoundBehavior.ReturnNull"/>.
     /// </summary>

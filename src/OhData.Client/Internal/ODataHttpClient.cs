@@ -20,10 +20,15 @@ internal sealed class ODataHttpClient
     private readonly HttpClient _http;
     private readonly OhDataClientOptions _options;
 
+    // Reads go through a private copy of the caller's options that also resolves @odata.type; writes
+    // keep using _readJson untouched.
+    private readonly JsonSerializerOptions _readJson;
+
     internal ODataHttpClient(HttpClient http, OhDataClientOptions options)
     {
         _http = http;
         _options = options;
+        _readJson = ODataTypeJsonConverterFactory.CreateReadOptions(options);
     }
 
     // ── GET collection ──────────────────────────────────────────────────────────
@@ -34,7 +39,7 @@ internal sealed class ODataHttpClient
         using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, url, ct);
         var envelope = await response.Content
-            .ReadFromJsonAsync<ODataCollectionResponse<T>>(_options.JsonOptions, ct);
+            .ReadFromJsonAsync<ODataCollectionResponse<T>>(_readJson, ct);
         return envelope?.Value ?? [];
     }
 
@@ -44,7 +49,7 @@ internal sealed class ODataHttpClient
         using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, url, ct);
         var envelope = await response.Content
-            .ReadFromJsonAsync<ODataCollectionResponse<T>>(_options.JsonOptions, ct);
+            .ReadFromJsonAsync<ODataCollectionResponse<T>>(_readJson, ct);
         return new ODataPage<T>
         {
             Items = envelope?.Value ?? [],
@@ -66,7 +71,7 @@ internal sealed class ODataHttpClient
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, absoluteUrl, ct);
         var envelope = await response.Content
-            .ReadFromJsonAsync<ODataCollectionResponse<T>>(_options.JsonOptions, ct);
+            .ReadFromJsonAsync<ODataCollectionResponse<T>>(_readJson, ct);
         return new ODataPage<T>
         {
             Items = envelope?.Value ?? [],
@@ -171,7 +176,7 @@ internal sealed class ODataHttpClient
         byte[] body = await response.Content.ReadAsByteArrayAsync(ct);
         ODataCollectionResponse<T>? envelope = body.Length == 0
             ? null
-            : JsonSerializer.Deserialize<ODataCollectionResponse<T>>(body, _options.JsonOptions);
+            : JsonSerializer.Deserialize<ODataCollectionResponse<T>>(body, _readJson);
 
         (ODataEntityAnnotations envelopeAnnotations, IReadOnlyList<ODataEntityAnnotations> itemAnnotations) =
             ODataAnnotationReader.ReadCollection(body, AnnotationNameComparer);
@@ -225,7 +230,7 @@ internal sealed class ODataHttpClient
         byte[] body = await response.Content.ReadAsByteArrayAsync(ct);
         if (body.Length == 0) return null;
 
-        T? entity = JsonSerializer.Deserialize<T>(body, _options.JsonOptions);
+        T? entity = JsonSerializer.Deserialize<T>(body, _readJson);
         if (entity is null) return null;
 
         return new ODataAnnotatedEntity<T>(
@@ -255,7 +260,7 @@ internal sealed class ODataHttpClient
         }
         await EnsureSuccessAsync(response, url, ct);
         if (response.StatusCode == System.Net.HttpStatusCode.NoContent) return null;
-        return await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct);
+        return await response.Content.ReadFromJsonAsync<T>(_readJson, ct);
     }
 
     // ── GET $count ──────────────────────────────────────────────────────────────
@@ -287,7 +292,7 @@ internal sealed class ODataHttpClient
         using var response = await _http.SendAsync(request, ct);
         await EnsureSuccessAsync(response, url, ct);
         if (response.StatusCode == HttpStatusCode.NoContent) return null;
-        return await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct);
+        return await response.Content.ReadFromJsonAsync<T>(_readJson, ct);
     }
 
     internal Task<T?> PostAsync<T>(string url, T body, CancellationToken ct)
@@ -308,7 +313,7 @@ internal sealed class ODataHttpClient
         using var response = await _http.SendAsync(request, ct);
         await EnsureSuccessAsync(response, url, ct);
         if (response.StatusCode == HttpStatusCode.NoContent) return null;
-        return await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct)
+        return await response.Content.ReadFromJsonAsync<T>(_readJson, ct)
                ?? throw new InvalidOperationException($"PUT to '{url}' returned an empty body.");
     }
 
@@ -331,7 +336,7 @@ internal sealed class ODataHttpClient
         using var response = await _http.SendAsync(request, ct);
         await EnsureSuccessAsync(response, url, ct);
         if (response.StatusCode == HttpStatusCode.NoContent) return null;
-        return await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct)
+        return await response.Content.ReadFromJsonAsync<T>(_readJson, ct)
                ?? throw new InvalidOperationException($"PATCH to '{url}' returned an empty body.");
     }
 
@@ -367,7 +372,7 @@ internal sealed class ODataHttpClient
         }
         await EnsureSuccessAsync(response, url, ct);
         if (response.StatusCode == HttpStatusCode.NoContent) return (null, null);
-        T? entity = await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct);
+        T? entity = await response.Content.ReadFromJsonAsync<T>(_readJson, ct);
         string? etag = response.Headers.ETag?.Tag?.Trim('"');
         return (entity, etag);
     }
@@ -416,7 +421,7 @@ internal sealed class ODataHttpClient
         await EnsureSuccessAsync(response, url, ct);
         if (response.StatusCode == HttpStatusCode.NoContent) return (null, null, false);
 
-        T? entity = await response.Content.ReadFromJsonAsync<T>(_options.JsonOptions, ct);
+        T? entity = await response.Content.ReadFromJsonAsync<T>(_readJson, ct);
         string? etag = response.Headers.ETag?.Tag?.Trim('"');
         return (entity, etag, false);
     }
