@@ -61,21 +61,26 @@ List<Award> awards = await client.For<Award>("Awards").ToListAsync();
 ```
 
 This applies to every read: collections, single entities, `ToAnnotatedPageAsync`, write echoes, and rows
-nested under `$expand`. `@odata.type` may sit anywhere in the object.
+nested under `$expand`, at any depth of a self-referencing hierarchy. `@odata.type` (or the OData 4.01 short
+form `@type`) may sit anywhere in the object.
 
 - **No configuration by default.** A subclass of the declared type in the declared type's assembly is matched
-  by `#` plus its full name, which is the server's default EDM naming (the `#` is optional).
-- **Renamed namespaces.** If the EDM type name is not the CLR full name, register it:
+  by namespace plus simple name, which is the server's default EDM naming (even for a nested class), or by
+  its CLR full name. The leading `#` is optional.
+- **Renamed namespaces and generic subclasses.** If the EDM type name is not one of those, or the subclass is
+  generic, register it. Register a closed instantiation of a generic type; abstract and open generic types
+  are rejected.
 
   ```csharp
   var options = new OhDataClientOptions();
   options.DerivedTypes.Add<AcademyAward>("My.Ns.AcademyAward");
   ```
 
+  Registrations are read once, when the client is constructed; adding one afterwards has no effect.
 - **Unknown or absent `@odata.type`** reads as the declared type.
+- **Types with their own JSON handling** (`[JsonConverter]` or `[JsonPolymorphic]`) are left to it.
 - **Reads only.** Request bodies are serialized as the declared type and carry no `@odata.type`.
-- A custom `JsonOptions` is honoured as before; the client reads through a private copy of it, so the
-  instance you pass is never modified.
-- A type with no derived types is read exactly as it was, with no extra work per row.
-- A type nested directly inside itself (a tree of the same base type) resolves derived types at the
-  top level only.
+- A custom `JsonOptions` is honoured as before and the instance you pass is never modified.
+- Types with no derived types are unaffected.
+- **Limits.** `ReferenceHandler.Preserve` (`$id`/`$ref`) fails with a `JsonException` when a `$ref` crosses a polymorphic
+  row's own object, and a JSON path in a deserialization error is relative to the row.

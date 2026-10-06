@@ -761,11 +761,13 @@ status codes or headers.
 
 - **`OhData.Client` ignored `@odata.type`, so a base-type read silently dropped derived members (#707).**
   `client.For<Award>("Awards").ToListAsync()` over a TPH set returned every row as `Award`, losing `Ceremony`,
-  `IsWinner` and the rest under a `200`. Rows now materialize as the type `@odata.type` names, wherever that member sits
-  in the object, on every read path including `$expand` rows and `ToAnnotatedPageAsync`. Zero configuration: a subclass
-  in the declared type's assembly matches by `#` + full name; `options.DerivedTypes.Add<T>("My.Ns.T")` covers a renamed
-  namespace; an unknown name reads as the base type. Writes are unchanged and emit no `@odata.type`. See
-  [derived types](docs/client/errors-and-types.md#derived-types).
+  `IsWinner` and the rest under a `200`. Rows now materialize as the type `@odata.type` (or the 4.01 `@type`) names,
+  wherever that member sits in the object, on every read path including `$expand` rows, `ToAnnotatedPageAsync` and
+  self-referencing hierarchies. A subclass in the declared type's assembly matches by namespace plus simple name (the
+  server's default EDM name) or CLR full name with no configuration; `options.DerivedTypes.Add<T>("My.Ns.T")` covers
+  anything else, including generic subclasses. An unknown name reads as the base type, and a type carrying
+  `[JsonConverter]` or `[JsonPolymorphic]` keeps its own handling. Writes are unchanged and emit no `@odata.type`.
+  See [derived types](docs/client/errors-and-types.md#derived-types).
 
 - **A memoizing name cache grew one entry per request-supplied casing, not per property (#537).**
   `ODataPropertyNaming.FindClrPropertyByEdmName` caches on `(Type, string)`, on the stated invariant
