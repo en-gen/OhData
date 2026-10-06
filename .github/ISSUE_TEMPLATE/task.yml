@@ -1,0 +1,20 @@
+name: Task
+description: Tooling, CI, docs, refactors, research and other work that is not library behaviour.
+type: Task
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What needs doing?
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: Checks that prove it is finished.
+      placeholder: |
+        - `dotnet test src/OhData.sln` passes with the new test
+    validations:
+      required: true
