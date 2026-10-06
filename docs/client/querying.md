@@ -145,6 +145,17 @@ Chain secondary sorts with `ThenBy` / `ThenByDescending`:
 
 Both validate `>= 0` and throw `ArgumentOutOfRangeException` otherwise.
 
+## `MaxPageSize`
+
+```csharp
+.MaxPageSize(100)
+// → Prefer: odata.maxpagesize=100
+```
+
+Asks the server for at most that many entities per page. It is sent as a `Prefer` header on the first request and on every `@odata.nextLink` request, so [`ToListAsync`](terminal-operations.md#tolistasync), `ToAsyncEnumerable` and the annotated walkers keep the page size for the whole walk. It is a preference the server may undercut, and it is not `$top`, which bounds the total.
+
+Any `Prefer` values already on the `HttpClient`'s default headers (such as `odata.include-annotations="*"`) are sent too; a default `odata.maxpagesize` yields to this one. Throws `ArgumentOutOfRangeException` for a value below 1.
+
 ## `IncludeCount`
 
 Appends `$count=true` to the request so the server includes the total matching count in the response envelope. The count is available on `ODataPage<T>.TotalCount` when you call [`ToPageAsync`](terminal-operations.md#topageasync):

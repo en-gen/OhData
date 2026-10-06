@@ -38,10 +38,11 @@ internal sealed class ODataHttpClient
         return envelope?.Value ?? [];
     }
 
-    internal async Task<ODataPage<T>> GetPageAsync<T>(string url, CancellationToken ct)
+    internal async Task<ODataPage<T>> GetPageAsync<T>(string url, int? maxPageSize, CancellationToken ct)
         where T : class
     {
-        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var request = CreatePageRequest(url, maxPageSize);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, url, ct);
         var envelope = await response.Content
             .ReadFromJsonAsync<ODataCollectionResponse<T>>(_options.JsonOptions, ct);
@@ -55,14 +56,15 @@ internal sealed class ODataHttpClient
 
     /// <summary>
     /// Fetches a page using an absolute URL (e.g. a <c>@odata.nextLink</c> value).
-    /// Unlike <see cref="GetPageAsync{T}(string, CancellationToken)"/>, the URL is used
+    /// Unlike <see cref="GetPageAsync{T}(string, int?, CancellationToken)"/>, the URL is used
     /// as-is with <see cref="HttpMethod.Get"/> so no base-address composition occurs.
     /// </summary>
-    internal async Task<ODataPage<T>> GetPageByAbsoluteUrlAsync<T>(string absoluteUrl, CancellationToken ct)
+    internal async Task<ODataPage<T>> GetPageByAbsoluteUrlAsync<T>(
+        string absoluteUrl, int? maxPageSize, CancellationToken ct)
         where T : class
     {
         EnsureNextLinkOriginAllowed(absoluteUrl);
-        using var request = new HttpRequestMessage(HttpMethod.Get, absoluteUrl);
+        using var request = CreatePageRequest(absoluteUrl, maxPageSize);
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, absoluteUrl, ct);
         var envelope = await response.Content
@@ -73,6 +75,57 @@ internal sealed class ODataHttpClient
             TotalCount = envelope?.Count,
             NextLink = envelope?.NextLink,
         };
+    }
+
+    /// <summary>
+    /// A collection GET, carrying <c>Prefer: odata.maxpagesize=n</c> when a page size was requested.
+    /// A request-level <c>Prefer</c> replaces the <see cref="HttpClient.DefaultRequestHeaders"/> one rather
+    /// than adding to it, so the caller's default tokens are re-sent beside it; a default
+    /// <c>odata.maxpagesize</c> is dropped so the query's value wins.
+    /// </summary>
+    private HttpRequestMessage CreatePageRequest(string url, int? maxPageSize)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (maxPageSize is not int n) return request;
+
+        var tokens = new List<string>();
+        if (_http.DefaultRequestHeaders.TryGetValues("Prefer", out IEnumerable<string>? defaults))
+        {
+            foreach (string header in defaults)
+            {
+                foreach (string token in SplitPreferTokens(header))
+                {
+                    int eq = token.IndexOf('=');
+                    string name = (eq < 0 ? token : token[..eq]).Trim();
+                    if (!name.Equals("odata.maxpagesize", StringComparison.OrdinalIgnoreCase)) tokens.Add(token.Trim());
+                }
+            }
+        }
+
+        tokens.Add($"odata.maxpagesize={n}");
+        request.Headers.TryAddWithoutValidation("Prefer", string.Join(", ", tokens));
+        return request;
+    }
+
+    /// <summary>Splits a <c>Prefer</c> header value on commas that are not inside a quoted string.</summary>
+    private static IEnumerable<string> SplitPreferTokens(string header)
+    {
+        int start = 0;
+        bool quoted = false;
+        for (int i = 0; i < header.Length; i++)
+        {
+            if (header[i] == '"')
+            {
+                quoted = !quoted;
+            }
+            else if (header[i] == ',' && !quoted)
+            {
+                if (i > start) yield return header[start..i];
+                start = i + 1;
+            }
+        }
+
+        if (start < header.Length) yield return header[start..];
     }
 
     // ── nextLink origin policy (#460) ───────────────────────────────────────────
@@ -141,24 +194,26 @@ internal sealed class ODataHttpClient
     // Entity binding is literally the same code — same envelope type, same JsonSerializerOptions —
     // so an annotated read cannot bind an entity differently from a plain one.
 
-    internal async Task<ODataAnnotatedPage<T>> GetAnnotatedPageAsync<T>(string url, CancellationToken ct)
+    internal async Task<ODataAnnotatedPage<T>> GetAnnotatedPageAsync<T>(
+        string url, int? maxPageSize, CancellationToken ct)
         where T : class
     {
-        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var request = CreatePageRequest(url, maxPageSize);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, url, ct);
         return await ReadAnnotatedPageAsync<T>(response, ct);
     }
 
     /// <summary>
     /// Annotation-preserving counterpart of
-    /// <see cref="GetPageByAbsoluteUrlAsync{T}(string, CancellationToken)"/>.
+    /// <see cref="GetPageByAbsoluteUrlAsync{T}(string, int?, CancellationToken)"/>.
     /// </summary>
     internal async Task<ODataAnnotatedPage<T>> GetAnnotatedPageByAbsoluteUrlAsync<T>(
-        string absoluteUrl, CancellationToken ct)
+        string absoluteUrl, int? maxPageSize, CancellationToken ct)
         where T : class
     {
         EnsureNextLinkOriginAllowed(absoluteUrl);
-        using var request = new HttpRequestMessage(HttpMethod.Get, absoluteUrl);
+        using var request = CreatePageRequest(absoluteUrl, maxPageSize);
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, absoluteUrl, ct);
         return await ReadAnnotatedPageAsync<T>(response, ct);

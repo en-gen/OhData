@@ -594,6 +594,12 @@ status codes or headers.
   now opens by presenting the package as two halves, read and write, instead of describing reads as
   already covered by projection.
 
+- **`OhData.Client`: `query.MaxPageSize(n)` requests a page size with `Prefer: odata.maxpagesize=n`
+  (#708).** The client sent only `return=minimal`, so a page size could be requested only through a
+  default header on the `HttpClient`. The preference is sent on the first request and on every
+  `@odata.nextLink` request of the same walk, on both the plain and the annotation-preserving
+  readers. `n` must be at least 1 (`ArgumentOutOfRangeException`). `docs/client/querying.md`.
+
 - **A new package: `EnGen.OhData.AspNetCore.Mapper` — serve an API model that differs from the EF
   entity, with the query still running in SQL (#651).** OhData shipped *half* of API-model / entity
   separation and said so nowhere: `DeltaProfile` maps a DTO write onto an entity, and nothing at all

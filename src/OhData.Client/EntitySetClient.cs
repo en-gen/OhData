@@ -25,7 +25,8 @@ public sealed class EntitySetClient<T> where T : class
         string? Expand = null,
         int? Top = null,
         int? Skip = null,
-        bool WithCount = false);
+        bool WithCount = false,
+        int? MaxPageSize = null);
 
     private readonly ODataHttpClient _http;
     private readonly OhDataClientOptions _options;
@@ -226,6 +227,23 @@ public sealed class EntitySetClient<T> where T : class
     /// </summary>
     public EntitySetClient<T> IncludeCount() => With(_state with { WithCount = true });
 
+    /// <summary>
+    /// Asks the server for at most <paramref name="count"/> entities per page with
+    /// <c>Prefer: odata.maxpagesize=<paramref name="count"/></c> (OData Part 1 §8.2.8.5), on every page
+    /// request of this query including <c>@odata.nextLink</c> follow-ups.
+    /// </summary>
+    /// <remarks>
+    /// A preference, not a limit: the server may return fewer. Distinct from <see cref="Top"/>, which
+    /// bounds the total. The caller's default <c>Prefer</c> tokens are kept; a default
+    /// <c>odata.maxpagesize</c> yields to this one.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="count"/> is less than 1.</exception>
+    public EntitySetClient<T> MaxPageSize(int count)
+    {
+        if (count < 1) throw new ArgumentOutOfRangeException(nameof(count), count, "maxpagesize must be >= 1.");
+        return With(_state with { MaxPageSize = count });
+    }
+
     // ── Key transition ──────────────────────────────────────────────────────────
 
     /// <summary>
@@ -252,7 +270,7 @@ public sealed class EntitySetClient<T> where T : class
     public async IAsyncEnumerable<T> ToAsyncEnumerable(
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        ODataPage<T> page = await _http.GetPageAsync<T>(BuildCollectionUrl(), ct);
+        ODataPage<T> page = await _http.GetPageAsync<T>(BuildCollectionUrl(), _state.MaxPageSize, ct);
         foreach (T item in page.Items)
             yield return item;
 
@@ -260,7 +278,7 @@ public sealed class EntitySetClient<T> where T : class
         while (page.NextLink is not null)
         {
             ThrowIfHopCapExceeded(++hops);
-            page = await _http.GetPageByAbsoluteUrlAsync<T>(page.NextLink, ct);
+            page = await _http.GetPageByAbsoluteUrlAsync<T>(page.NextLink, _state.MaxPageSize, ct);
             foreach (T item in page.Items)
                 yield return item;
         }
@@ -310,7 +328,7 @@ public sealed class EntitySetClient<T> where T : class
     /// </para>
     /// </remarks>
     public Task<ODataAnnotatedPage<T>> ToAnnotatedPageAsync(CancellationToken ct = default)
-        => _http.GetAnnotatedPageAsync<T>(BuildCollectionUrl(), ct);
+        => _http.GetAnnotatedPageAsync<T>(BuildCollectionUrl(), _state.MaxPageSize, ct);
 
     /// <summary>
     /// Annotation-preserving counterpart of <see cref="ToAsyncEnumerable"/>: lazily fetches all
@@ -326,7 +344,7 @@ public sealed class EntitySetClient<T> where T : class
     public async IAsyncEnumerable<ODataAnnotatedEntity<T>> ToAnnotatedAsyncEnumerable(
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        ODataAnnotatedPage<T> page = await _http.GetAnnotatedPageAsync<T>(BuildCollectionUrl(), ct);
+        ODataAnnotatedPage<T> page = await _http.GetAnnotatedPageAsync<T>(BuildCollectionUrl(), _state.MaxPageSize, ct);
         foreach (ODataAnnotatedEntity<T> entry in page.Entries)
             yield return entry;
 
@@ -336,7 +354,7 @@ public sealed class EntitySetClient<T> where T : class
             ThrowIfHopCapExceeded(++hops);
             // OriginalString, not ToString(): a server-issued link is followed verbatim as an opaque
             // URL, and ToString() can decode percent-escapes that were deliberately encoded.
-            page = await _http.GetAnnotatedPageByAbsoluteUrlAsync<T>(page.NextLink.OriginalString, ct);
+            page = await _http.GetAnnotatedPageByAbsoluteUrlAsync<T>(page.NextLink.OriginalString, _state.MaxPageSize, ct);
             foreach (ODataAnnotatedEntity<T> entry in page.Entries)
                 yield return entry;
         }
@@ -378,7 +396,7 @@ public sealed class EntitySetClient<T> where T : class
     /// matching count (before any <c>$top</c>/<c>$skip</c>).
     /// </summary>
     public Task<ODataPage<T>> ToPageAsync(CancellationToken ct = default)
-        => _http.GetPageAsync<T>(With(_state with { WithCount = true }).BuildCollectionUrl(), ct);
+        => _http.GetPageAsync<T>(With(_state with { WithCount = true }).BuildCollectionUrl(), _state.MaxPageSize, ct);
 
     /// <summary>
     /// POST a new entity. Returns the created entity as returned by the server

@@ -156,19 +156,17 @@ public sealed class BenchServerClientTests : IAsyncLifetime
     [Fact]
     public async Task MaxPageSize_IsAppliedByTheServer_AndTheClientFollowsTheNextLink()
     {
-        // The client has no API to send Prefer; a default header on its HttpClient stands in for one.
-        _server.Http.DefaultRequestHeaders.Add("Prefer", "odata.maxpagesize=2");
-
-        using var raw = await _server.Http.GetAsync("Gadgets?$orderby=Id");
-        Assert.True(raw.Headers.TryGetValues("Preference-Applied", out var applied));
-        Assert.Equal("odata.maxpagesize=2", Assert.Single(applied));
-
-        var page = await _client.For<Gadget>("Gadgets").OrderBy(g => g.Id).ToPageAsync();
+        var page = await _client.For<Gadget>("Gadgets").OrderBy(g => g.Id).MaxPageSize(2).ToPageAsync();
         Assert.Equal(2, page.Items.Count);
         Assert.NotNull(page.NextLink);
 
-        var all = await _client.For<Gadget>("Gadgets").OrderBy(g => g.Id).ToListAsync();
+        var all = await _client.For<Gadget>("Gadgets").OrderBy(g => g.Id).MaxPageSize(2).ToListAsync();
         Assert.Equal(new[] { 1, 2, 3, 4, 5 }, all.Select(g => g.Id).ToArray());
+
+        // Without the preference the server answers in one page.
+        var unpaged = await _client.For<Gadget>("Gadgets").OrderBy(g => g.Id).ToPageAsync();
+        Assert.Equal(5, unpaged.Items.Count);
+        Assert.Null(unpaged.NextLink);
     }
 
     // -- 501 for an unimplemented system option ------------------------------------------------------------------

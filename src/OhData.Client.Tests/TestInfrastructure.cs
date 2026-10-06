@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
@@ -388,12 +390,14 @@ internal sealed class PaginatedClientTestFixture : IAsyncDisposable
 {
     private readonly WebApplication _app;
     public OhDataClient Client { get; }
+    public HttpClient Http { get; }
 
     private PaginatedClientTestFixture(WebApplication app, string prefix)
     {
         _app = app;
         HttpClient httpClient = ((IHost)app).GetTestClient();
         httpClient.BaseAddress = new Uri(httpClient.BaseAddress!, prefix.Trim('/') + "/");
+        Http = httpClient;
         Client = new OhDataClient(httpClient);
     }
 
@@ -418,5 +422,98 @@ internal sealed class PaginatedClientTestFixture : IAsyncDisposable
     {
         Client.Dispose();
         await _app.DisposeAsync();
+    }
+}
+
+/// <summary>
+/// Records every request (URL, method, headers, body) and the response headers, and answers from a
+/// script or by forwarding to a real server's <see cref="HttpClient"/>.
+/// </summary>
+internal sealed class RecordingHandler : HttpMessageHandler
+{
+    public sealed class Seen
+    {
+        public required string Url { get; init; }
+        public required HttpMethod Method { get; init; }
+        public required Dictionary<string, string[]> Headers { get; init; }
+        public string? Body { get; init; }
+        public Dictionary<string, string[]> ResponseHeaders { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public string[] Prefer => Headers.TryGetValue("Prefer", out string[]? v) ? v : [];
+    }
+
+    private readonly Func<HttpRequestMessage, int, Task<HttpResponseMessage>> _script;
+
+    public RecordingHandler(Func<HttpRequestMessage, int, HttpResponseMessage> script)
+        => _script = (req, i) => Task.FromResult(script(req, i));
+
+    private RecordingHandler(Func<HttpRequestMessage, int, Task<HttpResponseMessage>> script) => _script = script;
+
+    public List<Seen> Requests { get; } = [];
+
+    /// <summary>Answers every request from <paramref name="server"/>, recording both directions.</summary>
+    public static RecordingHandler Forwarding(HttpClient server)
+        => new(async (req, _) =>
+        {
+            // HttpClient refuses to send one message twice, so forward a copy.
+            using var copy = new HttpRequestMessage(req.Method, req.RequestUri);
+            foreach (var h in req.Headers) copy.Headers.TryAddWithoutValidation(h.Key, h.Value);
+            if (req.Content is not null)
+            {
+                copy.Content = new ByteArrayContent(await req.Content.ReadAsByteArrayAsync());
+                foreach (var h in req.Content.Headers) copy.Content.Headers.TryAddWithoutValidation(h.Key, h.Value);
+            }
+            return await server.SendAsync(copy);
+        });
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        var seen = new Seen
+        {
+            Url = request.RequestUri!.OriginalString,
+            Method = request.Method,
+            Headers = request.Headers.ToDictionary(h => h.Key, h => h.Value.ToArray(), StringComparer.OrdinalIgnoreCase),
+            Body = request.Content is null ? null : await request.Content.ReadAsStringAsync(ct),
+        };
+        Requests.Add(seen);
+        HttpResponseMessage response = await _script(request, Requests.Count - 1);
+        foreach (var h in response.Headers) seen.ResponseHeaders[h.Key] = h.Value.ToArray();
+        return response;
+    }
+
+    public static HttpResponseMessage Json(string body) =>
+        new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+
+    public static HttpResponseMessage Text(string body) =>
+        new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "text/plain") };
+
+    public static OhDataClient ClientFor(
+        RecordingHandler handler, Action<OhDataClientOptions>? configure = null, Action<HttpClient>? configureHttp = null,
+        Uri? baseAddress = null)
+    {
+        var http = new HttpClient(handler) { BaseAddress = baseAddress ?? new Uri("http://localhost/odata/") };
+        configureHttp?.Invoke(http);
+        var options = new OhDataClientOptions();
+        configure?.Invoke(options);
+        return new OhDataClient(http, options);
+    }
+}
+
+/// <summary>One read-only bench server shared by a test class that never mutates it.</summary>
+internal sealed class BenchServerFixture : Xunit.IAsyncLifetime
+{
+    public OhData.ClientTestBench.BenchServer Server { get; private set; } = null!;
+    public OhDataClient Client { get; private set; } = null!;
+
+    public async Task InitializeAsync()
+    {
+        Server = await OhData.ClientTestBench.BenchServer.BuildAsync();
+        Client = new OhDataClient(Server.Http);
+    }
+
+    public async Task DisposeAsync()
+    {
+        Client.Dispose();
+        await Server.DisposeAsync();
     }
 }
