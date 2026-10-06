@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/en-gen/OhData/security/advisories/new
+    about: Report security issues privately via GitHub Security Advisories, not as public issues.
+  - name: Documentation
+    url: https://github.com/en-gen/OhData/tree/develop/docs
+    about: Usage, configuration and OData spec-compliance questions may already be answered in the docs.

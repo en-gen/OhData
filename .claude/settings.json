@@ -1,0 +1,17 @@
+{
+  "env": {
+    "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"process.stdout.write(require('fs').readFileSync(require('path').join(process.env.CLAUDE_PROJECT_DIR||'.','docs/agents/orchestrator.md'),'utf8'))\""
+          }
+        ]
+      }
+    ]
+  }
+}

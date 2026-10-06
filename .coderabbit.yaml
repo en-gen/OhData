@@ -1,0 +1,140 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit is the approving reviewer on develop (docs/agents/orchestrator.md
+# "Merging"): it approves once its comments are resolved, and a PR with
+# auto-merge on then merges on green CI. Assertive, because for most PRs it is
+# the only reviewer. Each instruction restates a rule in CLAUDE.md or
+# docs/internals/, so a new rule goes there first.
+language: en-US
+tone_instructions: >-
+  Plain words. Every finding cites file:line and names the concrete request,
+  input or configuration that makes it fail. No praise, no restating the diff.
+  Name the CLAUDE.md or docs/internals/ rule a finding rests on.
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+    # The default pauses after 5 reviewed commits, which would leave a long
+    # PR's latest push unapproved and its auto-merge stuck.
+    auto_pause_after_reviewed_commits: 0
+    base_branches:
+      - develop
+      - main
+  path_instructions:
+    - path: '**/*.cs'
+      instructions: >-
+        ImplicitUsings is disabled: every file states its usings (CLAUDE.md
+        "Code, comments and docs"). Comments say what the code cannot, in 1-3
+        lines; flag comments carrying history, measurements or rejected
+        alternatives, which belong in the issue, CHANGELOG or docs/internals/.
+        The shipping libraries multi-target net8.0 and net10.0: flag any API
+        that exists only on .NET 9+ in src/OhData.AspNetCore,
+        src/OhData.Client, src/OhData.AspNetCore.NSwag,
+        src/OhData.AspNetCore.Swashbuckle or src/OhData.AspNetCore.Mapper
+        (docs/internals/project-layout.md).
+    - path: 'src/OhData.AspNetCore/**'
+      instructions: >-
+        Read the docs/internals/ file for the area changed and flag a change
+        that contradicts a recorded decision without saying so. In particular
+        flag: a 400 where no profile setting could make the request succeed
+        (that is 501) or a 501 where one could (that is 400)
+        (docs/internals/query-options.md); a read of request-scoped profile
+        state (MaxTop, auth config, nav metadata) off the per-request source
+        instead of the startup source (docs/internals/overview.md "two
+        sources"); a per-type lookup keyed by the declared CLR type that a
+        derived runtime instance can miss, or PropertyInfo compared with ==
+        instead of HasSameMetadataDefinitionAs
+        (docs/internals/runtime-type-resolution.md); a body reader or scanner
+        that does not derive its options from the binder's serializer options
+        (docs/internals/write-path.md); a second transcription of logic that
+        already exists; an IResult or raw CLR graph returned without being
+        serialized inside the endpoint filter pipeline
+        (docs/internals/error-handling.md); a catch that turns a server fault
+        into a client 400; metadata or OpenAPI advertising an option the
+        route does not honour (docs/internals/edm-and-startup-validation.md);
+        a startup collision check comparing names with Ordinal instead of
+        OrdinalIgnoreCase. A spec claim must cite the clause; a claim about
+        Microsoft.AspNetCore.OData must cite its source file:line.
+    - path: 'src/OhData.AspNetCore/**/*Profile*.cs'
+      instructions: >-
+        Profile types have no ASP.NET Core dependency; auth is stored as plain
+        data (docs/internals/overview.md). Flag a new handler delegate where an
+        existing one could be ridden, and a cached compiled delegate that can
+        capture scoped state (docs/internals/overview.md captured state).
+    - path: 'src/OhData.AspNetCore.Mapper/**'
+      instructions: >-
+        Follow docs/internals/mapper-and-delta.md. Query composition binds
+        through Microsoft.AspNetCore.OData's binders and only substitutes
+        members; flag a hand-rolled binder. Validation reads Delta<T>'s own
+        behaviour through a probe rather than transcribing its predicate.
+    - path: 'src/**Tests/**'
+      instructions: >-
+        A test must be able to fail and must assert the real effect (status,
+        body bytes, SQL, whether the handler ran), not only that a call
+        returned (CLAUDE.md "Tests must be able to fail"). Flag a fixture
+        whose runtime type always equals its declared type when the change is
+        about per-type configuration, single-word property names when the
+        change is about naming policy, and a test that only re-states the
+        implementation. Byte-identity assertions are captured from the
+        pre-change build, not read off the new output.
+    - path: '{src/OhData.Server.Benchmarks,src/OhData.Client.Benchmarks,benchmarks}/**'
+      instructions: >-
+        A reported figure carries the commit, machine and run count. Flag a
+        benchmark that measures a transcribed copy of shipped code instead of
+        the shipped code (CLAUDE.md "Claim discipline").
+    - path: 'docs/**/*.md'
+      instructions: >-
+        docs/ describes current behaviour, never history: flag "used to",
+        "previously", version stamps for unreleased versions, and incident
+        narration (CLAUDE.md "Code, comments and docs"). Public guides are
+        benefit-led and factual and never disparage other projects or
+        maintainers. Spec claims cite the clause.
+    - path: 'docs/internals/**'
+      instructions: >-
+        Binding design records. A measurement states the commit it was taken
+        at; flag one that does not. Flag a change here that is not matched by
+        a code change or an owner decision on the linked issue.
+    - path: 'CHANGELOG.md'
+      instructions: >-
+        Breaking changes are marked BREAKING with the remedy. Entries go under
+        [Unreleased].
+    - path: '.github/workflows/**'
+      instructions: >-
+        build-and-test and k6 are required checks on develop; flag a rename of
+        either job or a path filter that could leave a required check
+        unreported. Codecov uploads stay fail_ci_if_error: false and run on
+        failed test runs too.
+    - path: '{.claude,docs/agents}/**'
+      instructions: >-
+        Operational instructions for agents. Flag contradictions with
+        CLAUDE.md or docs/agents/orchestrator.md, and any rule telling an
+        agent to merge, force-push, git stash, or add AI attribution.
+chat:
+  auto_reply: true
+knowledge_base:
+  code_guidelines:
+    # Root CLAUDE.md is a default pattern. A guideline under docs/ otherwise
+    # governs only docs/, so map each to the code it covers.
+    filePatterns:
+      - files: 'docs/internals/overview.md'
+        applyTo: 'src/**'
+      - files: 'docs/internals/query-options.md'
+        applyTo: 'src/OhData.AspNetCore/**'
+      - files: 'docs/internals/error-handling.md'
+        applyTo: 'src/OhData.AspNetCore/**'
+      - files: 'docs/internals/write-path.md'
+        applyTo: 'src/OhData.AspNetCore/**'
+      - files: 'docs/internals/runtime-type-resolution.md'
+        applyTo: 'src/OhData.AspNetCore/**'
+      - files: 'docs/internals/edm-and-startup-validation.md'
+        applyTo: 'src/OhData.AspNetCore/**'
+      - files: 'docs/internals/authorization.md'
+        applyTo: 'src/OhData.AspNetCore/**'
+      - files: 'docs/internals/mapper-and-delta.md'
+        applyTo: 'src/OhData.AspNetCore.Mapper/**'
+      - files: 'docs/internals/project-layout.md'
+        applyTo: 'src/**'
