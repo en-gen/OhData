@@ -3951,7 +3951,7 @@ internal static class OhDataEndpointFactory
                             : queryable;
                         countQ = ApplyRoundingMode(countQ, source.RoundingMode);
                         odataCount = QueryOptionGate.CountRootQuery(
-                            queryable, countQ, options, logger, source.EntitySetName);
+                            queryable, countQ, (ODataQueryOptions<TModel>)options, logger, source.EntitySetName);
                     }
 
                     // Apply filter/orderby/skip/top without $select so TModel shape is preserved.
@@ -4404,7 +4404,7 @@ internal static class OhDataEndpointFactory
                         // $expand path has answered since #494, not a 500.
                         items = QueryOptionGate.MaterializeRootQuery(
                             queryable, () => ApplySelectPushdown(filtered),
-                            options, logger, source.EntitySetName);
+                            (ODataQueryOptions<TModel>)options, logger, source.EntitySetName);
                     }
 
                     // Gap 3: compute nextLink when MaxTop (or preferred page size) is set and page is full.
@@ -4849,7 +4849,7 @@ internal static class OhDataEndpointFactory
                             : q;
                         filtered = ApplyRoundingMode(filtered, source.RoundingMode);
                         long queryableCount = QueryOptionGate.CountRootQuery(
-                            q, filtered, options, logger, source.EntitySetName);
+                            q, filtered, (ODataQueryOptions<TModel>)options, logger, source.EntitySetName);
                         return Results.Content(queryableCount.ToString(), "text/plain");
                     }
                     if (options.Filter is not null)
