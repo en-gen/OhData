@@ -7,9 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.OData.Deltas;
-using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using OhData;
 using OhData.Client;
@@ -226,9 +224,9 @@ internal static class Program
         await writer.WriteLineAsync(Serialize(first));
 
         await writer.WriteLineAsync();
-        await writer.WriteLineAsync("--- TPH: derived rows keep their derived members ($expand nested $filter) ---");
-        var awards = await client.For<AcademyAward>().Key(1).GetAsync();
-        await writer.WriteLineAsync(Serialize(awards));
+        await writer.WriteLineAsync("--- TPH: a derived row read as its own type keeps its derived members ---");
+        var award = await client.For<AcademyAward>().Key(1).GetAsync();
+        await writer.WriteLineAsync(Serialize(award));
 
         await writer.WriteLineAsync();
         await writer.WriteLineAsync("--- Typed rejection (409 Conflict) ---");
