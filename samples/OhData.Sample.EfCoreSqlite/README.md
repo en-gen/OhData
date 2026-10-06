@@ -28,6 +28,7 @@ install the NuGet package instead:
 
 ```
 dotnet add package EnGen.OhData.AspNetCore
+dotnet add package EnGen.OhData.AspNetCore.Mapper   # for the Orders (API model != entity) example
 ```
 
 ## Run it

@@ -9,9 +9,11 @@ using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using OhData.Sample.EfCoreSqlite;
 using Xunit;
 
 namespace OhData.AspNetCore.Mapper.Tests;
@@ -23,7 +25,8 @@ namespace OhData.AspNetCore.Mapper.Tests;
 /// </summary>
 public sealed class SampleHost : IAsyncLifetime
 {
-    private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"ohdata-sample-{Guid.NewGuid():N}.db");
+    private readonly string _dbPath = Path.Join(Path.GetTempPath(), $"ohdata-sample-{Guid.NewGuid():N}.db");
+    private WebApplicationFactory<Program> _baseFactory = null!;
     private WebApplicationFactory<Program> _factory = null!;
 
     public SqlCapture Sql { get; } = new();
@@ -31,12 +34,18 @@ public sealed class SampleHost : IAsyncLifetime
 
     public Task InitializeAsync()
     {
-        _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        _baseFactory = new WebApplicationFactory<Program>();
+        _factory = _baseFactory.WithWebHostBuilder(b =>
         {
             b.UseSetting("ConnectionStrings:Shop", $"Data Source={_dbPath}");
             b.ConfigureServices(s => s.AddLogging(l => l.AddProvider(Sql)));
         });
         Client = _factory.CreateClient();
+        using (IServiceScope scope = _factory.Services.CreateScope())
+        {
+            ShopDbContext db = scope.ServiceProvider.GetRequiredService<ShopDbContext>();
+            Assert.Equal($"Data Source={_dbPath}", db.Database.GetConnectionString());
+        }
         return Task.CompletedTask;
     }
 
@@ -44,6 +53,7 @@ public sealed class SampleHost : IAsyncLifetime
     {
         Client.Dispose();
         await _factory.DisposeAsync();
+        await _baseFactory.DisposeAsync();
         SqliteConnection.ClearAllPools();
         foreach (string f in Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(_dbPath) + "*"))
             File.Delete(f);
