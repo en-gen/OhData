@@ -176,6 +176,16 @@ annotation and is not gated. `Microsoft.AspNetCore.OData` behaves identically. D
 allowlists as a security boundary over a model with an open complex type; the measured matrix is in
 [open-types.md](open-types.md#dynamic-keys-outside-allowlists).
 
+### System query options require the `$`
+
+`Microsoft.AspNetCore.OData` enables the 4.01 optional-`$` scheme by default, so `?filter=…` and
+`?top=1` act as `$filter` and `$top`. OhData declares OData 4.0, where a key without `$` is a custom
+query option (Part 2 §5.2), so it never applies one: a no-`$` key is passed through untouched like any
+other custom option. The same holds for a `$` key with leading whitespace (`?%20$filter=…`), which
+`Microsoft.AspNetCore.OData` would otherwise trim and apply. OhData hands it only the keys that begin
+with `$` or `@`, so the rule holds whatever the host configured, including `WithODataOptions`; a host
+that also runs `Microsoft.AspNetCore.OData` controllers keeps its own setting.
+
 ### Case-insensitive system query option names
 
 `ODataQueryOptions.IsSystemQueryOption` lowercases the name before comparing whenever the URI resolver

@@ -2604,8 +2604,19 @@ internal static class OhDataEndpointFactory
         // if it ever does the group filter turns it into a logged 500 + OData error envelope.
         var context = new ODataQueryContext(model, typeof(TModel), null);
 
+        // #714/#718: MS sees only the `$`/`@` keys (see SystemQueryKeyNarrowing) for the length of
+        // the construction. Restoring the QueryString, not just Query, matters: assigning Query
+        // rewrites the raw QueryString, and the server's own @odata.nextLink is built from it.
+        HttpRequest request = ctx.Request;
+        QueryString originalQueryString = request.QueryString;
+        IQueryCollection? narrowed = SystemQueryKeyNarrowing.Narrow(request.Query);
         try
         {
+            if (narrowed is not null)
+            {
+                request.Query = narrowed;
+            }
+
             options = new ODataQueryOptions<TModel>(context, ctx.Request);
             error = null;
             return true;
@@ -2632,6 +2643,13 @@ internal static class OhDataEndpointFactory
             error = ODataError(400, "InvalidQueryOption",
                 "One or more system query options in the request URL could not be parsed.");
             return false;
+        }
+        finally
+        {
+            if (narrowed is not null)
+            {
+                request.QueryString = originalQueryString;
+            }
         }
     }
 
@@ -3623,6 +3641,14 @@ internal static class OhDataEndpointFactory
                             out ODataQueryOptions<TModel>? options, out IResult? optionsError))
                     {
                         return optionsError;
+                    }
+
+                    // #714: the profile's own ApplyTo re-reads the real query, which the narrowing no
+                    // longer covers; see SystemQueryKeyNarrowing.FindNormalizedCollision.
+                    if (SystemQueryKeyNarrowing.FindNormalizedCollision(ctx.Request, options) is { } collidingOption)
+                    {
+                        return ODataError(400, "InvalidQueryOption",
+                            $"The query string names {collidingOption} more than once under different spellings.");
                     }
 
                     // #385: refuse a literal zero divisor BEFORE execution, so every provider gives
