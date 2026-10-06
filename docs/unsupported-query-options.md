@@ -85,7 +85,10 @@ asks the body to do: it describes the unimplemented functionality.
 - **Custom query options.** Part 2 §5.2 requires a custom query option to *not* begin with `$`, so
   any key without the sigil is passed through untouched: `?myTenant=acme` is your business, and the
   framework's own `ohdata-skiptoken` continuation offset is deliberately spelled without a `$` for
-  the same reason.
+  the same reason. This includes the *names* of system options: `?filter=…`, `?top=1`,
+  `?select=…`, `?apply=…` and `?search=…` are custom options, not shorthand for `$filter` and
+  friends. OhData serves OData 4.0, where the `$`-optional scheme does not exist, so they are
+  ignored on every route (the response equals the one without them). Spell the option with `$`.
 - **Parameter aliases** (§5.3) begin with `@`, not `$`, and are likewise untouched.
 - **Mixed-case spellings of real options.** `$Select` and `$TOP` are honoured, as they always have
   been. `Microsoft.AspNetCore.OData` lowercases an option name before matching it whenever the URI

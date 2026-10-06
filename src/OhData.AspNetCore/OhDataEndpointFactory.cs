@@ -2604,8 +2604,12 @@ internal static class OhDataEndpointFactory
         // if it ever does the group filter turns it into a logged 500 + OData error envelope.
         var context = new ODataQueryContext(model, typeof(TModel), null);
 
+        // #714: the optional-$ scheme is a 4.01 feature and OhData declares 4.0, so a key without
+        // `$` is a custom option. It is read off the request services, hence the scoped swap.
+        IServiceProvider hostServices = ctx.RequestServices;
         try
         {
+            ctx.RequestServices = new DollarRequiredServiceProvider(hostServices);
             options = new ODataQueryOptions<TModel>(context, ctx.Request);
             error = null;
             return true;
@@ -2632,6 +2636,10 @@ internal static class OhDataEndpointFactory
             error = ODataError(400, "InvalidQueryOption",
                 "One or more system query options in the request URL could not be parsed.");
             return false;
+        }
+        finally
+        {
+            ctx.RequestServices = hostServices;
         }
     }
 
