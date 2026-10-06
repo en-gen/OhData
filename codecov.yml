@@ -40,3 +40,5 @@ ignore:
   - "src/OhData.ClientTestBench.AspNetCore/**"
   - "src/OhData.Client.Benchmarks/**"
   - "src/OhData.Server.Benchmarks/**"
+  - "src/OhData.AspNetCore.Mapper.Tests/**"
+  - "samples/**"

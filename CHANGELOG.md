@@ -584,6 +584,16 @@ status codes or headers.
 
 ### Added
 
+- **A runnable API-model / entity example in `samples/OhData.Sample.EfCoreSqlite` (#663).** `Orders`
+  is served from an `OrderDto` that differs from its `Order` entity by a rename, a path through
+  `Customer`, a `Format` and a `Reference`, read through `MappedEntitySetProfile` and written through a
+  `DeltaProfile` + injected `IDeltaFactory` for `POST`/`PUT`/`PATCH`, against real SQLite so EF's
+  translation is exercised. It is driven by `SampleAppTests` in `OhData.AspNetCore.Mapper.Tests`
+  (read shape, `$filter` through the path and the format in SQL, `$expand`, and each write verb
+  re-read), which also makes `dotnet build src/OhData.sln` compile the sample. `docs/delta-mapping.md`
+  now opens by presenting the package as two halves, read and write, instead of describing reads as
+  already covered by projection.
+
 - **A new package: `EnGen.OhData.AspNetCore.Mapper` — serve an API model that differs from the EF
   entity, with the query still running in SQL (#651).** OhData shipped *half* of API-model / entity
   separation and said so nowhere: `DeltaProfile` maps a DTO write onto an entity, and nothing at all

@@ -9,6 +9,9 @@ in terms of members the entity does not have.
 dotnet add package EnGen.OhData.AspNetCore.Mapper
 ```
 
+The same package carries the write half, [`DeltaProfile`](delta-mapping.md). A runnable example
+of both over real SQLite is [`samples/OhData.Sample.EfCoreSqlite`](../samples/OhData.Sample.EfCoreSqlite/Orders.cs).
+
 ## Why this needs a package
 
 The obvious approach — project the entity into the DTO and let OData query the result — does not

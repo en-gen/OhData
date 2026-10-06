@@ -1,14 +1,27 @@
 # Delta Mapping
 
-`DeltaProfile` + `IDeltaFactory` give DTO-backed entity sets a clean **write** path — PATCH, PUT,
-and POST — without AutoMapper or any other mapping dependency. You declare how a DTO/view model
-maps onto its backing entity in a profile; the framework discovers, compiles, and validates every
-mapping **once at startup**; and handlers consume a single injected `IDeltaFactory`.
+`EnGen.OhData.AspNetCore.Mapper` separates the **API model** (the DTO on the wire) from the **EF
+entity** behind it, in both directions, and ships as one package:
 
-The read direction is already covered by projection (`db.Set<Entity>().Select(e => new Dto { ... })`,
-SQL pushdown intact). Projection has no inverse, so the write direction — applying a
-`Delta<Dto>`'s changed properties onto an `Entity` while preserving PATCH semantics — is the gap
-this fills.
+| direction | you declare | page |
+|---|---|---|
+| **Read** — `GET`, `$filter`, `$orderby`, `$expand` | `MappedEntitySetProfile<TKey, TModel, TEntity>` | [api-model-mapping.md](api-model-mapping.md) |
+| **Write** — `PATCH`, `PUT`, `POST` | `DeltaProfile` + the injected `IDeltaFactory` | this page |
+
+A hand-written projection (`Select(e => new Dto { ... })`) forces a choice for every navigation: bind
+it eagerly, so every request pays for it, or serve `$expand` from a `batchGetAll` delegate, so
+`$filter` cannot go *through* it ([dtos-and-ef-entities.md](dtos-and-ef-entities.md) has the trade).
+The read half declares where each member comes from instead, so the query is composed per request.
+
+This page covers the write half. You declare how a DTO/view model maps onto its backing entity in a
+`DeltaProfile`; the framework discovers, compiles, and validates every mapping **once at startup**;
+and handlers consume a single injected `IDeltaFactory`. Projection has no inverse, so applying a
+`Delta<Dto>`'s changed properties onto an `Entity` while preserving PATCH semantics is the gap it
+fills.
+
+A runnable example of both halves over real SQLite — `Orders` served by a
+`MappedEntitySetProfile`, written through a `DeltaProfile` — is in
+[`samples/OhData.Sample.EfCoreSqlite`](../samples/OhData.Sample.EfCoreSqlite/Orders.cs).
 
 ## Declare — a `DeltaProfile`
 
@@ -54,10 +67,7 @@ builder.Services.AddOhData(o => o
     .AddDeltaProfile<SalesDeltaProfile>());
 ```
 
-> `AddEntitySetProfile<T>()` is the current name of the method previously called `AddProfile<T>()`.
-
-Or let the existing assembly scanner discover both profile kinds in one pass — there is no separate
-delta scanner:
+Or scan an assembly — one call per profile kind:
 
 ```csharp
 builder.Services.AddOhData(o => o
@@ -235,8 +245,8 @@ if (delta.TryGetChanged(x => x.Price, out decimal price)) { /* price was sent */
 
 `Create` is intended for scalar/structural properties. Navigation writes stay with `$ref`,
 [deep insert](deep-insert.md), or custom handler logic — nested-object mapping and implicit type
-coercion are out of scope by design (that is where a full object-mapper begins). There is no
-convention-based read projector; the read side already works with hand-written `.Select(...)`.
+coercion are out of scope by design (that is where a full object-mapper begins). The read side is
+`MappedEntitySetProfile` — see [api-model-mapping.md](api-model-mapping.md).
 
 ### What "no navigation writes" enforces, exactly
 
@@ -254,6 +264,6 @@ related-entity reference onto the graph. If your DTO reuses an entity type for a
 
 Delta mapping has no dependency on the rest of the mapper — no EDM, no profile, no query
 pipeline — and ships in `EnGen.OhData.AspNetCore.Mapper` because it is the **write** half of
-the API-model / entity separation story that package now owns. The `Delta<T>` sugar
+the API-model / entity separation story that package owns. The `Delta<T>` sugar
 (`IsChanged`, `TryGetChanged`) stays in the core `EnGen.OhData.AspNetCore` package, since it
 is about `Delta<T>` rather than about mapping.

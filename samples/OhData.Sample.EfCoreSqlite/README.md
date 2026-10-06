@@ -16,6 +16,9 @@ What it demonstrates:
   `IQueryable`, decoupling the wire model from the persistence model without losing pushdown
 - A **many-to-many** (`Products ⟷ Tags`) whose join table has no CLR type and never appears
   on the wire — `$expand=Tags` batch-loads through it with a single JOIN per page
+- **API model ≠ entity** with `EnGen.OhData.AspNetCore.Mapper`: `Orders` is served from an `OrderDto`
+  that differs from the `Order` entity, read through a `MappedEntitySetProfile` and written through a
+  `DeltaProfile` — see [below](#api-model--entity-the-mapper-package)
 - EF Core **migrations** (committed, in [`Migrations/`](Migrations/)) applied with
   `Database.Migrate()` on startup, plus idempotent seeding
 
@@ -224,12 +227,44 @@ Two different suppressions are at work here, and they live at different layers:
 
 Same word, different layers.
 
+## API model ≠ entity: the mapper package
+
+`Orders` serves an `OrderDto` backed by an `Order` entity, and the two are deliberately different
+shapes ([`Orders.cs`](Orders.cs)). Rather than hand-writing a projection, `OrderProfile` declares where
+each DTO member comes from, and `OrderDeltaProfile` declares the write-side divergences:
+
+| `OrderDto` member | comes from | kind |
+|---|---|---|
+| `OrderNumber` | `Order.Number` | rename |
+| `CustomerName` | `Order.Customer.Name` | path (a JOIN) |
+| `ShipTo` | `$"{ShipFirst} {ShipLast}"` | format |
+| `Customer` | `Order.Customer` | reference (`$expand`) |
+
+```bash
+# $filter through the path -> WHERE c.Name = ... over the join the projection carries;
+# $filter on the formatted member -> a || concat in the WHERE
+curl "http://localhost:5220/odata/Orders?\$filter=CustomerName%20eq%20'Ada%20Lovelace'"
+curl "http://localhost:5220/odata/Orders?\$filter=ShipTo%20eq%20'Byron%20Lovelace'"
+
+# $expand=Customer is one batched query for the page
+curl "http://localhost:5220/odata/Orders?\$expand=Customer&\$orderby=OrderNumber"
+
+# Writes go through IDeltaFactory: OrderNumber lands on Order.Number, and only the sent members change
+curl -X PATCH "http://localhost:5220/odata/Orders(1)" \
+     -H "Content-Type: application/json" \
+     -d '{"OrderNumber":"SO-1001-R","TotalCents":5500}'
+```
+
+See [docs/api-model-mapping.md](../../docs/api-model-mapping.md) (read) and
+[docs/delta-mapping.md](../../docs/delta-mapping.md) (write).
+
 ## Project tour
 
 | File | What's in it |
 |------|--------------|
 | [`Models.cs`](Models.cs) | `Product`, `Category`, `Tag`, the `ProductSummary` DTO, and the `ShopDbContext` (FK-only Product↔Category — see the comment there for why those CLR navigations are `Ignore`d in EF — plus the Product⟷Tag skip navigations) |
 | [`Profiles.cs`](Profiles.cs) | The four `EntitySetProfile` classes — this is the OhData part |
+| [`Orders.cs`](Orders.cs) | The mapper-package example: `Order`/`OrderDto`, the `MappedEntitySetProfile`, and the `DeltaProfile` |
 | [`Program.cs`](Program.cs) | `AddOhData` + `MapOhData`, `Database.Migrate()`, seeding |
 | [`Migrations/`](Migrations/) | Committed EF Core migrations. To add one: `dotnet tool restore && dotnet ef migrations add <Name>` (the [`dotnet-ef` local tool](.config/dotnet-tools.json) is pinned in this directory) |
 
