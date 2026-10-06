@@ -201,12 +201,9 @@ internal sealed class ODataTypeJsonConverterFactory : JsonConverterFactory
             Dictionary<string, Type>? names = null;
             if (!IsFrameworkType(type))
             {
-                List<Type> found = [];
-                foreach (Type candidate in TypesOf(type.Assembly))
-                {
-                    if (!candidate.IsAbstract && !candidate.IsGenericTypeDefinition && candidate.IsSubclassOf(type))
-                        found.Add(candidate);
-                }
+                List<Type> found = TypesOf(type.Assembly)
+                    .Where(candidate => !candidate.IsAbstract && !candidate.IsGenericTypeDefinition && candidate.IsSubclassOf(type))
+                    .ToList();
 
                 // The server names a type by namespace + simple name, which drops the enclosing type of a
                 // nested class; the CLR full name is matched too and wins a collision.
@@ -220,11 +217,8 @@ internal sealed class ODataTypeJsonConverterFactory : JsonConverterFactory
                     names![candidate.FullName!] = candidate;
             }
 
-            foreach (KeyValuePair<string, Type> entry in _registry)
-            {
-                if (entry.Value != type && entry.Value.IsSubclassOf(type))
-                    (names ??= new Dictionary<string, Type>(StringComparer.Ordinal))[entry.Key] = entry.Value;
-            }
+            foreach (KeyValuePair<string, Type> entry in _registry.Where(e => e.Value != type && e.Value.IsSubclassOf(type)))
+                (names ??= new Dictionary<string, Type>(StringComparer.Ordinal))[entry.Key] = entry.Value;
 
             return names;
         }
