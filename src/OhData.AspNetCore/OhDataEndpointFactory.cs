@@ -6841,7 +6841,7 @@ internal static class OhDataEndpointFactory
                             // #396: `value` is a raw CLR property value (a complex type's whole
                             // sub-graph, for a complex property), so this envelope is serialized
                             // inside the filter's scope rather than deferred. See PreRenderedJson.
-                            // #713: the envelope keys are contractual, so the host's DictionaryKeyPolicy is cleared.
+                            // Envelope keys are contractual: EnvelopeOptions clears the host's DictionaryKeyPolicy.
                             return PreRenderedJson(envelope, EnvelopeOptions(jsonOptions ?? _pascalCaseSerializerOptions));
                         }
                         catch (ODataKeyFormatException ex)

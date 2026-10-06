@@ -169,7 +169,7 @@ public class ErrorEnvelopeFidelityTests
         string body = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(status, response.StatusCode);
-        System.IO.File.AppendAllText("C:/Users/engenb/AppData/Local/Temp/cap713.txt", url + "|" + body + "\n"); Assert.Equal(expected, body);
+        Assert.Equal(expected, body);
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
         Assert.Equal("utf-8", response.Content.Headers.ContentType?.CharSet);
     }
