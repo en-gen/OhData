@@ -84,12 +84,11 @@ internal static class Program
     public static async Task Main(string[] args)
     {
         // Build both the OData server and a minimal web host with /health in one process.
-        var serverApp = await BuildServerAsync("/odata");
+        await using var server = await BenchServer.BuildAsync(
+            "/odata", o => o.AddEntitySetProfile<WidgetProfile>());
 
         // Create the OhDataClient pointing at the in-process test server.
-        using var httpClient = ((IHost)serverApp).GetTestClient();
-        httpClient.BaseAddress = new Uri(httpClient.BaseAddress!, "odata/");
-        using var client = new OhDataClient(httpClient);
+        using var client = new OhDataClient(server.Http);
 
         // Build the outer web application that exposes /health and runs the demo.
         var builder = WebApplication.CreateBuilder(args);
@@ -118,25 +117,6 @@ internal static class Program
         Console.WriteLine();
 
         await app.RunAsync();
-
-        await serverApp.DisposeAsync();
-    }
-
-    private static async Task<WebApplication> BuildServerAsync(string prefix)
-    {
-        var builder = WebApplication.CreateBuilder();
-        builder.WebHost.UseTestServer();
-        builder.Services.AddLogging(b => b.ClearProviders());
-        builder.Services.AddOhData(o =>
-        {
-            o.WithPrefix(prefix);
-            o.AddEntitySetProfile<WidgetProfile>();
-        });
-
-        var app = builder.Build();
-        app.MapOhData();
-        await app.StartAsync();
-        return app;
     }
 
     // ReSharper disable once UnusedParameter.Local — stream used for output
@@ -244,6 +224,22 @@ internal static class Program
             .OrderBy(x => x.Price)
             .FirstOrDefaultAsync();
         await writer.WriteLineAsync(Serialize(first));
+
+        await writer.WriteLineAsync();
+        await writer.WriteLineAsync("--- TPH: derived rows keep their derived members ($expand nested $filter) ---");
+        var awards = await client.For<AcademyAward>().Key(1).GetAsync();
+        await writer.WriteLineAsync(Serialize(awards));
+
+        await writer.WriteLineAsync();
+        await writer.WriteLineAsync("--- Typed rejection (409 Conflict) ---");
+        try
+        {
+            await client.For<Gadget>().InsertAsync(new Gadget { Name = "dup" });
+        }
+        catch (ODataClientException ex)
+        {
+            await writer.WriteLineAsync($"HTTP {ex.StatusCode} [{ex.ODataErrorCode}] {ex.ODataErrorMessage}");
+        }
 
         await writer.WriteLineAsync();
         await writer.WriteLineAsync("=== Demo complete ===");
