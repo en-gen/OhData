@@ -194,6 +194,24 @@ public sealed class WithQueryOptionTests(BenchServerFixture bench) : IClassFixtu
         Assert.All(handler.Requests, r => Assert.Contains("ohdata-test=1", r.Url));
     }
 
+    [Fact]
+    public async Task Option_IsNotAppendedToAServerIssuedNextLink()
+    {
+        const string nextLink = "http://localhost/odata/Widgets?$skip=1";
+        var handler = new RecordingHandler((_, i) => i == 0
+            ? RecordingHandler.Json("{\"value\":[{\"Id\":1}],\"@odata.nextLink\":\"" + nextLink + "\"}")
+            : RecordingHandler.Json("{\"value\":[{\"Id\":2}]}"));
+        using var client = RecordingHandler.ClientFor(handler);
+
+        var all = await client.For<Widget>("Widgets")
+            .WithQueryOption("ohdata-test", "1").ToListAsync();
+
+        Assert.Equal(2, all.Count);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal("http://localhost/odata/Widgets?ohdata-test=1", handler.Requests[0].Url);
+        Assert.Equal(nextLink, handler.Requests[1].Url);
+    }
+
     // -- against the bench server -----------------------------------------------------------
 
     [Fact]
