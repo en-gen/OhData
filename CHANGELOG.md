@@ -109,6 +109,9 @@ status codes or headers.
   answers a generic `400`. **Remedy: spell the option with `$`** (`$filter`, `$top`, `$select`, …).
   `$`-prefixed names stay case-insensitive (`$Select`, `$TOP`). The host's own `ODataOptions` is not
   modified, and the rule holds under `WithODataOptions` too.
+  On a Priority-1 route, a query naming one option under two spellings that Microsoft normalizes to the
+  same name (`?%20$top=1&$top=2`, `?top=1&$top=2`) answers `400 InvalidQueryOption` before the profile
+  runs; it was a `500` from inside the profile's `ApplyTo`.
 
 - **⚠ BREAKING CHANGE — a Priority-1 route refuses the system query options its profile does not
   honour (#475).** `GET /{Set}?$search=…` on a `GetODataQueryable` profile with no `$search` handling

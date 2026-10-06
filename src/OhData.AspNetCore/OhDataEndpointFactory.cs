@@ -3643,6 +3643,14 @@ internal static class OhDataEndpointFactory
                         return optionsError;
                     }
 
+                    // #714: the profile's own ApplyTo re-reads the real query, which the narrowing no
+                    // longer covers; see SystemQueryKeyNarrowing.FindNormalizedCollision.
+                    if (SystemQueryKeyNarrowing.FindNormalizedCollision(ctx.Request, options) is { } collidingOption)
+                    {
+                        return ODataError(400, "InvalidQueryOption",
+                            $"The query string names {collidingOption} more than once under different spellings.");
+                    }
+
                     // #385: refuse a literal zero divisor BEFORE execution, so every provider gives
                     // the same answer instead of three (400 / 200-empty / 500).
                     if (QueryOptionGate.FindLiteralZeroDivisor(options) is { } zeroDivisorOption)

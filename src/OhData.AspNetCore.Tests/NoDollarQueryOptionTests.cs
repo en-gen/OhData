@@ -181,6 +181,56 @@ public class NoDollarQueryOptionTests
         }
     }
 
+    [Theory]
+    [InlineData("%20$top=1&$top=2")]
+    [InlineData("%09$top=1&+$top=2")]
+    [InlineData("%20$filter=Id%20eq%203&$filter=Id%20eq%201")]
+    [InlineData("top=1&$top=2")]
+    [InlineData("filter=Id%20eq%203&$filter=Id%20eq%201")]
+    [InlineData("$top=1&%20$TOP=2")]
+    [InlineData("@a=1&%20@a=2")]
+    [InlineData("%20=1")]
+    [InlineData("$TOP=1&$top=2")]
+    public async Task PriorityOne_KeysThatCollideAfterMicrosoftsNormalization_Return400_BeforeTheProfileRuns(string query)
+    {
+        // The profile's options.ApplyTo re-reads the real Request.Query and Dictionary.Add throws on
+        // two keys that trim / optional-$ / case-fold to one name: it was a 500 from inside the profile.
+        await using TestFixture fx = await BuildAsync();
+        NdApplyODataProfile.Invocations = 0;
+        HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/NdApplyODatas?{query}");
+        string body = await resp.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Contains("\"InvalidQueryOption\"", body);
+        Assert.Equal(0, NdApplyODataProfile.Invocations);
+    }
+
+    [Fact]
+    public async Task PriorityOne_CollisionMessage_NamesTheOption()
+    {
+        await using TestFixture fx = await BuildAsync();
+        HttpResponseMessage resp = await fx.Client.GetAsync("/odata/NdApplyODatas?%20$top=1&$top=2");
+        Assert.Contains("'$top'", await resp.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData("custom=7&$top=1")]
+    [InlineData("custom=7&%20custom=8")]
+    [InlineData("custom=7&Custom=8")]
+    [InlineData("$top=1&$skip=0&@a=1")]
+    public async Task PriorityOne_NonCollidingKeys_StillReachTheProfile_AndItsRequestQuery(string query)
+    {
+        await using TestFixture fx = await BuildAsync();
+        NdApplyODataProfile.Invocations = 0;
+        NdApplyODataProfile.LastCustom = null;
+        HttpResponseMessage resp = await fx.Client.GetAsync($"/odata/NdApplyODatas?{query}");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(1, NdApplyODataProfile.Invocations);
+        if (query.StartsWith("custom=7", StringComparison.Ordinal))
+        {
+            Assert.StartsWith("7", NdApplyODataProfile.LastCustom);
+        }
+    }
+
     [Fact]
     public async Task GetById_NoDollarSelect_IsNotAppliedBesideADollarExpand()
     {
@@ -242,6 +292,9 @@ internal class NdBareQueryableProfile : EntitySetProfile<int, SqParent>
 /// <summary>Priority-1 profile that, unlike <c>SqODataProfile</c>, really calls <c>ApplyTo</c>.</summary>
 internal class NdApplyODataProfile : ODataEntitySetProfile<int, SqParent>
 {
+    internal static int Invocations;
+    internal static string? LastCustom;
+
     public NdApplyODataProfile() : base(x => x.Id)
     {
         EntitySetName = "NdApplyODatas";
@@ -249,6 +302,8 @@ internal class NdApplyODataProfile : ODataEntitySetProfile<int, SqParent>
         OrderByEnabled = true;
         GetODataQueryable = (options, ct) =>
         {
+            Invocations++;
+            LastCustom = options.Request.Query["custom"].ToString();
             IQueryable q = options.ApplyTo(SqStore.Parents.AsQueryable(),
                 AllowedQueryOptions.Select | AllowedQueryOptions.Expand);
             return Task.FromResult(ODataQueryResult<SqParent>.FromQueryable((IQueryable<SqParent>)q));
