@@ -151,6 +151,11 @@ public class ErrorEnvelopeFidelityTests
             "/odata/Widgets", HttpStatusCode.OK,
             "{\"@odata.context\":\"http://localhost/odata/$metadata#Widgets\",\"value\":[{\"Id\":1,\"Name\":\"Sprocket\"},{\"Id\":2,\"Name\":\"Cog\"}]}"
         },
+        {
+            // The structural-property read envelope (#713) -- a pre-rendered Dictionary too.
+            "/odata/Widgets(1)/Name", HttpStatusCode.OK,
+            "{\"@odata.context\":\"http://localhost/odata/$metadata#Widgets(1)/Name\",\"value\":\"Sprocket\"}"
+        },
     };
 
     [Theory]
@@ -164,7 +169,7 @@ public class ErrorEnvelopeFidelityTests
         string body = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(status, response.StatusCode);
-        Assert.Equal(expected, body);
+        System.IO.File.AppendAllText("C:/Users/engenb/AppData/Local/Temp/cap713.txt", url + "|" + body + "\n"); Assert.Equal(expected, body);
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
         Assert.Equal("utf-8", response.Content.Headers.ContentType?.CharSet);
     }
@@ -199,6 +204,7 @@ public class ErrorEnvelopeFidelityTests
     [InlineData("/odata/Widgets?$orderby=Name")]
     [InlineData("/odata/BoundWidgets/GetByName?name=Alpha")]
     [InlineData("/odata/BoundWidgets/DoubleCount?factor=2")]
+    [InlineData("/odata/Widgets(1)/Name")]
     public async Task HostDictionaryKeyPolicy_DoesNotReshapeAnyEnvelope(string url)
     {
         // Pre-fix, with SnakeCaseUpper: {"ERROR":{"CODE":...}} on every error response and

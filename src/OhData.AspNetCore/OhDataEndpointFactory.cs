@@ -6837,12 +6837,12 @@ internal static class OhDataEndpointFactory
                             // #252: serialize through the owned options so a complex-typed property's
                             // nested member names follow OhData's casing (PascalCase by default) instead
                             // of leaking the host's HttpJsonOptions policy via the Results.Ok pipeline.
-                            // (Envelope keys are Dictionary keys — unaffected by PropertyNamingPolicy —
-                            // and primitive values have no member names, so both are unchanged.)
+                            // (PropertyNamingPolicy does not touch the envelope keys; primitive values have no member names.)
                             // #396: `value` is a raw CLR property value (a complex type's whole
                             // sub-graph, for a complex property), so this envelope is serialized
                             // inside the filter's scope rather than deferred. See PreRenderedJson.
-                            return PreRenderedJson(envelope, jsonOptions ?? _pascalCaseSerializerOptions);
+                            // #713: the envelope keys are contractual, so the host's DictionaryKeyPolicy is cleared.
+                            return PreRenderedJson(envelope, EnvelopeOptions(jsonOptions ?? _pascalCaseSerializerOptions));
                         }
                         catch (ODataKeyFormatException ex)
                         {
