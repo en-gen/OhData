@@ -7,7 +7,9 @@ that is the shortest thing that works, not because the two must be the same type
 This page covers the dependency-free way to serve a DTO: project it in the handler and let EF
 translate the projection. If the difference between model and entity is large enough that you would
 rather *declare* it than hand-write the projection — and still have `$filter`/`$orderby` run in SQL
-against the entity — [`EnGen.OhData.AspNetCore.Mapper`](api-model-mapping.md) does that instead.
+against the entity — [`EnGen.OhData.AspNetCore.Mapper`](api-model-mapping.md) does that instead, for
+writes as well as reads ([delta mapping](delta-mapping.md)). The
+[`EfCoreSqlite` sample](../samples/OhData.Sample.EfCoreSqlite/Orders.cs) shows both halves running.
 
 ## Reading: project in the handler
 

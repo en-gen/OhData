@@ -12,8 +12,12 @@ public static class SeedData
 {
     public static void EnsureSeeded(ShopDbContext db)
     {
-        if (db.Products.Any()) return;
+        if (!db.Products.Any()) SeedCatalog(db);
+        if (!db.Orders.Any()) SeedOrders(db);
+    }
 
+    private static void SeedCatalog(ShopDbContext db)
+    {
         var tools = new Category { Name = "Tools" };
         var fasteners = new Category { Name = "Fasteners" };
         var electrical = new Category { Name = "Electrical" };
@@ -57,6 +61,18 @@ public static class SeedData
             new() { Name = "Masking Tape 48mm", Price = 3.45m, Stock = 149, CategoryId = paint.Id },
             new() { Name = "Brush Set (5)", Price = 12.99m, Stock = 44, CategoryId = paint.Id },
         });
+        db.SaveChanges();
+    }
+
+    private static void SeedOrders(ShopDbContext db)
+    {
+        var ada = new Customer { Name = "Ada Lovelace" };
+        var grace = new Customer { Name = "Grace Hopper" };
+        db.Customers.AddRange(ada, grace);
+        db.Orders.AddRange(
+            new Order { Number = "SO-1001", Customer = ada, ShipFirst = "Ada", ShipLast = "Lovelace", TotalCents = 4999 },
+            new Order { Number = "SO-1002", Customer = grace, ShipFirst = "Grace", ShipLast = "Hopper", TotalCents = 12500 },
+            new Order { Number = "SO-1003", Customer = ada, ShipFirst = "Byron", ShipLast = "Lovelace", TotalCents = 899 });
         db.SaveChanges();
     }
 }

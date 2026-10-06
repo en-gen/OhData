@@ -12,6 +12,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.*" />
 		<PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.*" />
 		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
 		<PackageReference Include="coverlet.collector" Version="10.0.1">
@@ -41,6 +42,9 @@
 	<ItemGroup>
 		<ProjectReference Include="..\OhData.AspNetCore\OhData.AspNetCore.csproj" />
 		<ProjectReference Include="..\OhData.AspNetCore.Mapper\OhData.AspNetCore.Mapper.csproj" />
+		<!-- SampleAppTests boots the sample's real Program.cs. Referencing it here is also what makes
+		     `dotnet build src/OhData.sln` compile the sample (it is not in the solution itself). -->
+		<ProjectReference Include="..\..\samples\OhData.Sample.EfCoreSqlite\OhData.Sample.EfCoreSqlite.csproj" />
 	</ItemGroup>
 
 </Project>
