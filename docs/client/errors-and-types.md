@@ -60,7 +60,7 @@ List<Award> awards = await client.For<Award>("Awards").ToListAsync();
 // awards[0] is an AcademyAward with Ceremony and IsWinner populated
 ```
 
-This applies to every read: collections, single entities, `ToAnnotatedPageAsync`, write echoes, and rows
+This applies to every read: collections, single entities, `ToAnnotatedPageAsync`, `GetPropertyAsync`, write echoes, and rows
 nested under `$expand`, at any depth of a self-referencing hierarchy. `@odata.type` (or the OData 4.01 short
 form `@type`) may sit anywhere in the object.
 
