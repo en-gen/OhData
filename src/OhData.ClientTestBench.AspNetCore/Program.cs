@@ -225,14 +225,14 @@ internal static class Program
 
         await writer.WriteLineAsync();
         await writer.WriteLineAsync("--- TPH: a derived row read as its own type keeps its derived members ---");
-        var award = await client.For<AcademyAward>().Key(1).GetAsync();
+        var award = await client.For<AcademyAward>("Awards").Key(1).GetAsync();
         await writer.WriteLineAsync(Serialize(award));
 
         await writer.WriteLineAsync();
         await writer.WriteLineAsync("--- Typed rejection (409 Conflict) ---");
         try
         {
-            await client.For<Gadget>().InsertAsync(new Gadget { Name = "dup" });
+            await client.For<Gadget>("Gadgets").InsertAsync(new Gadget { Name = "dup" });
         }
         catch (ODataClientException ex)
         {

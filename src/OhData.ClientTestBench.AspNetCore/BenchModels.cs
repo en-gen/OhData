@@ -15,11 +15,11 @@ using OhData;
 
 namespace OhData.ClientTestBench;
 
-// This file is shared: Program.cs runs it as a demo, and the two client test projects link it as a
-// <Compile> item so they exercise the same server shapes (#652). Types are public because
-// Microsoft.OData.Client instantiates entity types by reflection from another assembly.
+// Shared: Program.cs runs it as a demo and the client test projects link it as a <Compile> item.
+// Types are public because Microsoft.OData.Client instantiates entity types by reflection.
+// The bench is single-caller: one shared SqliteConnection and an unlocked GadgetStore.
 
-// -- Awards: a TPH hierarchy with a collection navigation (mirrors the TestBench's #617 fixture) --
+// -- Awards: a TPH hierarchy with a collection navigation (mirrors src/OhData.TestBench.AspNetCore/Models.cs) --
 
 public class Award
 {

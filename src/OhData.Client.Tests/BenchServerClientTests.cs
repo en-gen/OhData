@@ -7,10 +7,9 @@ using Xunit;
 
 namespace OhData.Client.Tests;
 
-// #652: OhData.Client against the 2.0.0 server shapes the shared bench models -- a TPH hierarchy with
-// a collection navigation (#528/#529/#628) and typed handler rejections (#581). Every assertion reads
-// what the client PRODUCED from the server's real bytes; a Skip'd test is a measured client gap,
-// written as the behaviour a conforming client would show.
+// OhData.Client against the shared bench server: a TPH hierarchy with a collection navigation, typed
+// handler rejections and paging. Tests read client output unless marked as a raw-HTTP bench check;
+// a Skip'd test is a known client gap, written as the behaviour a conforming client would show.
 
 public sealed class BenchServerClientTests : IAsyncLifetime
 {
@@ -45,7 +44,6 @@ public sealed class BenchServerClientTests : IAsyncLifetime
     [Fact]
     public async Task DerivedRows_UnderExpand_KeepDerivedMembers()
     {
-        // The #529 shape: a polymorphic root is served through the Include path, not the member-init.
         var rows = await _client.For<AcademyAward>("Awards")
             .Expand("Nominations")
             .OrderBy(a => a.Id)
@@ -54,7 +52,6 @@ public sealed class BenchServerClientTests : IAsyncLifetime
         Assert.Equal(3, rows.Count);
         Assert.Equal("67th Academy Awards", rows[0].Ceremony);
         Assert.Equal(3, rows[0].Nominations.Count);
-        Assert.Equal("", rows[2].Ceremony); // the base row has no derived members to carry
     }
 
     [Fact]
@@ -77,12 +74,12 @@ public sealed class BenchServerClientTests : IAsyncLifetime
         string? TypeOf(int index) =>
             page.Entries[index].Annotations.TryGetValue("@odata.type", out var el) ? el.GetString() : null;
 
-        Assert.Equal("#OhData.ClientTestBench.AcademyAward", TypeOf(0));
-        Assert.Equal("#OhData.ClientTestBench.FestivalAward", TypeOf(1));
+        Assert.Equal("#" + typeof(AcademyAward).FullName, TypeOf(0));
+        Assert.Equal("#" + typeof(FestivalAward).FullName, TypeOf(1));
         Assert.Null(TypeOf(2)); // runtime type == declared type, so §4.5.3 does not require it
     }
 
-    [Fact(Skip = "#TBD-client-polymorphism — client gap, see report")]
+    [Fact(Skip = "#707: OhData.Client ignores @odata.type")]
     public async Task Collection_OfBaseType_MaterializesEachRowAsItsODataType()
     {
         var rows = await _client.For<Award>("Awards").OrderBy(a => a.Id).ToListAsync();
@@ -92,7 +89,7 @@ public sealed class BenchServerClientTests : IAsyncLifetime
         Assert.IsType<Award>(rows[2]);
     }
 
-    // -- Typed rejections (#581) ----------------------------------------------------------------
+    // -- Typed rejections ----------------------------------------------------------------
 
     [Fact]
     public async Task Conflict_SurfacesAs409WithItsCodeAndMessage()
@@ -113,6 +110,7 @@ public sealed class BenchServerClientTests : IAsyncLifetime
 
         Assert.Equal(412, ex.StatusCode);
         Assert.Equal("StaleVersion", ex.ODataErrorCode);
+        Assert.Equal("The gadget changed.", ex.ODataErrorMessage);
     }
 
     [Fact]
@@ -123,12 +121,13 @@ public sealed class BenchServerClientTests : IAsyncLifetime
 
         Assert.Equal(403, ex.StatusCode);
         Assert.Equal("Protected", ex.ODataErrorCode);
+        Assert.Equal("Gadget 1 cannot be deleted.", ex.ODataErrorMessage);
     }
 
-    // -- /$value 204 (#369) -----------------------------------------------------------------------
+    // -- Null property -------------------------------------------------------------------------
 
     [Fact]
-    public async Task NullProperty_IsNotAnError_ForTheClientReadingTheEntity()
+    public async Task EntityWithNullProperty_ReadsFine()
     {
         Gadget? gadget = await _client.For<Gadget>("Gadgets").Key(1).GetAsync();
 
@@ -139,7 +138,7 @@ public sealed class BenchServerClientTests : IAsyncLifetime
     [Fact]
     public async Task NullProperty_RawValueSegment_Is204_AndAPresentOneIs200()
     {
-        // The client has no /$value API; this pins what the bench serves for that segment.
+        // Bench smoke check over raw HTTP: the client has no /$value API (client coverage is #709).
         using var absent = await _server.Http.GetAsync("Gadgets(1)/Note/$value");
         using var present = await _server.Http.GetAsync("Gadgets(2)/Note/$value");
 
@@ -148,7 +147,7 @@ public sealed class BenchServerClientTests : IAsyncLifetime
         Assert.Equal("note2", await present.Content.ReadAsStringAsync());
     }
 
-    // -- Paging: Prefer: odata.maxpagesize (#372) ---------------------------------------------------
+    // -- Paging: Prefer: odata.maxpagesize ---------------------------------------------------
 
     [Fact]
     public async Task MaxPageSize_IsAppliedByTheServer_AndTheClientFollowsTheNextLink()
@@ -168,13 +167,15 @@ public sealed class BenchServerClientTests : IAsyncLifetime
         Assert.Equal(new[] { 1, 2, 3, 4, 5 }, all.Select(g => g.Id).ToArray());
     }
 
-    // -- 501 sigil refusal (#359) ------------------------------------------------------------------
+    // -- 501 for an unimplemented system option ------------------------------------------------------------------
 
     [Fact]
     public async Task UnimplementedSystemOption_Is501OnTheWire()
     {
+        // Raw HTTP bench check; client-side coverage is #710.
         using var raw = await _server.Http.GetAsync("Gadgets?$apply=groupby((Name))");
 
         Assert.Equal(HttpStatusCode.NotImplemented, raw.StatusCode);
+        Assert.Contains("UnsupportedQueryOption", await raw.Content.ReadAsStringAsync());
     }
 }

@@ -9,10 +9,7 @@ using Xunit;
 
 namespace OhData.MicrosoftODataClient.Tests.MsClient;
 
-// #652 / #628: Microsoft.OData.Client resolves a row's CLR type from its @odata.type annotation.
-// OhData omitted the annotation for derived rows until #628, which is a §4.5.3 MUST; this is the
-// conformance claim #628 rests on, asserted by the industry-standard client rather than by byte
-// comparison. The CLR types are the shared bench's own (BenchModels.cs, linked).
+// Microsoft.OData.Client resolves a row's CLR type from its @odata.type annotation.
 
 public sealed class MsClientPolymorphismTests : IAsyncLifetime
 {
@@ -33,14 +30,8 @@ public sealed class MsClientPolymorphismTests : IAsyncLifetime
         _context.Configurations.RequestPipeline.OnMessageCreating =
             args => new TestServerRequestMessage(args, _server.Http);
         _context.Format.UseJson(model);
-        _context.ResolveType = name => name switch
-        {
-            "OhData.ClientTestBench.Award" => typeof(Award),
-            "OhData.ClientTestBench.AcademyAward" => typeof(AcademyAward),
-            "OhData.ClientTestBench.FestivalAward" => typeof(FestivalAward),
-            "OhData.ClientTestBench.AwardNomination" => typeof(AwardNomination),
-            _ => null,
-        };
+        Type[] known = { typeof(Award), typeof(AcademyAward), typeof(FestivalAward), typeof(AwardNomination) };
+        _context.ResolveType = name => known.FirstOrDefault(t => t.FullName == name);
         _context.ResolveName = type => type.FullName;
     }
 
@@ -65,7 +56,6 @@ public sealed class MsClientPolymorphismTests : IAsyncLifetime
     [Fact]
     public async Task DerivedRows_UnderExpand_KeepTheirTypeAndMembers()
     {
-        // #529: $expand takes the Include path; the derived members must not vanish with it.
         List<Award> rows = (await _context.CreateQuery<Award>("Awards")
             .AddQueryOption("$orderby", "Id")
             .AddQueryOption("$expand", "Nominations").ExecuteAsync()).ToList();
