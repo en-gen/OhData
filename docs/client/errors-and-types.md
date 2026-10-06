@@ -48,3 +48,34 @@ explicit numeric offset, so the client never emits an offset-less value:
 converted to its UTC instant via `ToUniversalTime()`; `DateTimeKind.Unspecified` is treated as
 UTC. If your `Unspecified` values represent local wall-clock time, convert them yourself (or
 use `DateTimeOffset`, which always carries its own offset and passes through unchanged).
+
+## Derived types
+
+When a read targets a base type and the server sends `@odata.type` on a derived row (a table-per-hierarchy
+entity set, for example), the client materializes that row as the derived CLR type, so its own members are
+kept:
+
+```csharp
+List<Award> awards = await client.For<Award>("Awards").ToListAsync();
+// awards[0] is an AcademyAward with Ceremony and IsWinner populated
+```
+
+This applies to every read: collections, single entities, `ToAnnotatedPageAsync`, write echoes, and rows
+nested under `$expand`. `@odata.type` may sit anywhere in the object.
+
+- **No configuration by default.** A subclass of the declared type in the declared type's assembly is matched
+  by `#` plus its full name, which is the server's default EDM naming (the `#` is optional).
+- **Renamed namespaces.** If the EDM type name is not the CLR full name, register it:
+
+  ```csharp
+  var options = new OhDataClientOptions();
+  options.DerivedTypes.Add<AcademyAward>("My.Ns.AcademyAward");
+  ```
+
+- **Unknown or absent `@odata.type`** reads as the declared type.
+- **Reads only.** Request bodies are serialized as the declared type and carry no `@odata.type`.
+- A custom `JsonOptions` is honoured as before; the client reads through a private copy of it, so the
+  instance you pass is never modified.
+- A type with no derived types is read exactly as it was, with no extra work per row.
+- A type nested directly inside itself (a tree of the same base type) resolves derived types at the
+  top level only.

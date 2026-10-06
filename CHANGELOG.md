@@ -759,6 +759,14 @@ status codes or headers.
   like every other envelope; a default host's bytes are unchanged. The `/$value` route emits a raw
   scalar and has no envelope, and no other `Dictionary` envelope was found without the rule.
 
+- **`OhData.Client` ignored `@odata.type`, so a base-type read silently dropped derived members (#707).**
+  `client.For<Award>("Awards").ToListAsync()` over a TPH set returned every row as `Award`, losing `Ceremony`,
+  `IsWinner` and the rest under a `200`. Rows now materialize as the type `@odata.type` names, wherever that member sits
+  in the object, on every read path including `$expand` rows and `ToAnnotatedPageAsync`. Zero configuration: a subclass
+  in the declared type's assembly matches by `#` + full name; `options.DerivedTypes.Add<T>("My.Ns.T")` covers a renamed
+  namespace; an unknown name reads as the base type. Writes are unchanged and emit no `@odata.type`. See
+  [derived types](docs/client/errors-and-types.md#derived-types).
+
 - **A memoizing name cache grew one entry per request-supplied casing, not per property (#537).**
   `ODataPropertyNaming.FindClrPropertyByEdmName` caches on `(Type, string)`, on the stated invariant
   that every caller passes a name already drawn from the model's own finite vocabulary. That was true
