@@ -752,6 +752,13 @@ status codes or headers.
 
 ### Fixed
 
+- **The structural-property read envelope was serialized under the host's `DictionaryKeyPolicy` (#713).**
+  `GET /{Set}({key})/{Prop}` builds a `Dictionary` envelope and pre-rendered it with the registration's
+  options, which #495 had not routed through `EnvelopeOptions`. Measured with a host `SnakeCaseUpper`:
+  `{"@ODATA.CONTEXT":...,"VALUE":"..."}`, unreadable by any OData client. It now clears the key policy
+  like every other envelope; a default host's bytes are unchanged. The `/$value` route emits a raw
+  scalar and has no envelope, and no other `Dictionary` envelope was found without the rule.
+
 - **A memoizing name cache grew one entry per request-supplied casing, not per property (#537).**
   `ODataPropertyNaming.FindClrPropertyByEdmName` caches on `(Type, string)`, on the stated invariant
   that every caller passes a name already drawn from the model's own finite vocabulary. That was true
