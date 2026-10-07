@@ -44,9 +44,12 @@ string? note = await client.For<Product>().Key(42).GetPropertyAsync(x => x.Note)
 
 // GET /Products(42)/Note/$value  -> the raw text
 string? raw = await client.For<Product>().Key(42).GetRawValueAsync(x => x.Note);
+
+// a property declared as a base type resolves to the derived CLR type when the value carries @odata.type
+Award? award = await client.For<Movie>().Key(7).GetPropertyAsync(x => x.TopAward);  // an AcademyAward instance if the server says so
 ```
 
-The selector must be a direct member access on the entity; the wire name follows `[JsonPropertyName]`, then the configured naming policy. `GetPropertyAsync` throws a `JsonException` for a `200` body that is not an object carrying `value`. `GetRawValueAsync` returns the body text unparsed, and refuses a `byte[]` member with `ArgumentException` — read that one with `GetPropertyAsync`, which decodes it.
+The selector must be a direct member access on the entity; the wire name follows `[JsonPropertyName]`, then the configured naming policy. `GetPropertyAsync` throws a `JsonException` for a `200` body that is not an object carrying `value`. `GetRawValueAsync` returns the body text unparsed, and refuses a `byte[]` member with `ArgumentException` — read that one with `GetPropertyAsync`, which decodes it. `GetPropertyAsync` is polymorphism-aware like every read: when the property's value is an object carrying `@odata.type`, it materializes as the matching derived CLR type (see [Derived types](errors-and-types.md#derived-types)).
 
 Both return `default`/`null` on `204 No Content` (a `null` property). A `404` — missing entity, missing property or unknown route alike — follows `OhDataClientOptions.NotFoundBehavior`, as `GetAsync` does. So a missing entity and a stored `0` are indistinguishable through a non-nullable `TProp`; ask for a nullable one to tell them apart:
 

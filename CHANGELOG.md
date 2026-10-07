@@ -790,6 +790,13 @@ status codes or headers.
 
 ### Fixed
 
+- **`OhData.Client`'s `GetPropertyAsync` ignored `@odata.type` on a polymorphic property (#720).**
+  The `value` envelope was deserialized with the plain `JsonOptions` instead of the polymorphism-aware
+  read options every other read uses (#707), so a property declared as a polymorphic base (complex or
+  entity-typed, single or collection) came back as the base type with the derived members dropped. It
+  now reads through the same options; a non-polymorphic property is unchanged. `GetRawValueAsync`
+  returns text and deserializes nothing, so it needed no change.
+
 - **A `$` query key with leading whitespace was applied while every gate treated it as custom
   (#718).** `Microsoft.AspNetCore.OData` trims each key before testing for `$`, OhData's sigil and
   capability checks do not, so `?%20$filter=…` (also `+` and `%09`) was applied with every capability

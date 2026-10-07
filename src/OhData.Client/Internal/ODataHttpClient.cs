@@ -327,7 +327,7 @@ internal sealed class ODataHttpClient
         if (response.StatusCode == HttpStatusCode.NoContent) return default;
 
         var envelope = await response.Content
-            .ReadFromJsonAsync<ODataPropertyResponse<TProp>>(_options.JsonOptions, ct);
+            .ReadFromJsonAsync<ODataPropertyResponse<TProp>>(_readJson, ct);
         if (envelope is null)
             throw new JsonException("The property response body was null; expected an object with a 'value' member.");
         return envelope.Value;

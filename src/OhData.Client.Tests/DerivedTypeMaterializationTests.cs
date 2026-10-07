@@ -38,6 +38,12 @@ public sealed class DerivedTypeMaterializationTests
         public Pet? Favourite { get; set; }
     }
 
+    internal sealed class Box
+    {
+        public int Id { get; set; }
+        public Plain? Item { get; set; }
+    }
+
     internal sealed class Plain
     {
         public int Id { get; set; }
@@ -132,6 +138,44 @@ public sealed class DerivedTypeMaterializationTests
         Pet? pet = await client.For<Pet>("Pets").Key(1).GetAsync();
 
         Assert.Equal("Lab", Assert.IsType<Dog>(pet).Breed);
+    }
+
+    // #720: GetPropertyAsync reads the `value` envelope through the same polymorphism-aware options.
+    [Fact]
+    public async Task GetProperty_PolymorphicSingleValue_ResolvesDerivedType()
+    {
+        var (client, _) = Make($$$"""{"@odata.context":"x","value":{"Id":1,"Name":"Rex","Breed":"Lab","@odata.type":"{{{DogType}}}"}}""");
+
+        Pet? pet = await client.For<Household>("Households").Key(1).GetPropertyAsync(h => h.Favourite);
+
+        Assert.Equal("Lab", Assert.IsType<Dog>(pet).Breed);
+    }
+
+    [Fact]
+    public async Task GetProperty_PolymorphicCollectionValue_ResolvesDerivedTypes()
+    {
+        var (client, _) = Make($$"""
+            {"value":[{"@odata.type":"{{CatType}}","Id":2,"Name":"Tom","Indoor":true},
+                      {"Id":1,"Name":"Rex","Breed":"Lab","@odata.type":"{{DogType}}"},
+                      {"Id":3,"Name":"Plain"}]}
+            """);
+
+        List<Pet>? pets = await client.For<Household>("Households").Key(1).GetPropertyAsync(h => h.Pets);
+
+        Assert.NotNull(pets);
+        Assert.True(Assert.IsType<Cat>(pets[0]).Indoor);
+        Assert.Equal("Lab", Assert.IsType<Dog>(pets[1]).Breed);
+        Assert.IsType<Pet>(pets[2]);
+    }
+
+    [Fact]
+    public async Task GetProperty_NonPolymorphicValue_IsUnchanged()
+    {
+        var (client, _) = Make("""{"value":{"Id":5,"Name":"x"}}""");
+
+        Plain? plain = await client.For<Box>("Boxes").Key(1).GetPropertyAsync(b => b.Item);
+
+        Assert.Equal(5, plain!.Id);
     }
 
     [Fact]
