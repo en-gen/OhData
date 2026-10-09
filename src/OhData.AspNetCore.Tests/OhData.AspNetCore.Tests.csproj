@@ -19,11 +19,11 @@
 		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
 		<!-- Transitive pin: clears GHSA-2m69-gcr7-jv3q (SQLitePCLRaw < 2.1.12) under TreatWarningsAsErrors. -->
 		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
-		<PackageReference Include="coverlet.collector" Version="10.0.1">
+		<PackageReference Include="coverlet.collector" Version="10.1.0">
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
 			<PrivateAssets>all</PrivateAssets>
 		</PackageReference>
-		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
+		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
 		<!-- Codecov Test Analytics: JUnit XML report per test assembly; CI invokes the junit logger (ci.yml). -->
 		<PackageReference Include="JunitXml.TestLogger" Version="8.0.0" />
 		<PackageReference Include="xunit" Version="2.*" />
