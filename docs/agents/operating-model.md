@@ -218,13 +218,15 @@ at a sensible interval and exits on its first event, reporting it:
 
 - `state` is MERGED or CLOSED;
 - `reviewDecision` is CHANGES_REQUESTED;
-- on a `needs-owner` PR only, `reviewDecision` is APPROVED and every `statusCheckRollup` entry has finished with no failing `conclusion` (the watcher keeps waiting until both hold);
+- on a `needs-owner` PR only, `reviewDecision` is APPROVED, `build-and-test` and `k6` are both present and have completed successfully, and every `statusCheckRollup` entry has finished with no failing `conclusion` (the watcher keeps waiting until all hold);
 - any `statusCheckRollup` entry has a failing `conclusion` (FAILURE or TIMED_OUT);
 - `autoMergeRequest` is null on a PR that is not `needs-owner`;
 - `mergeStateStatus` is DIRTY (a conflict).
 
 Overwatch handles the event, then starts a new watcher, until the PR is merged
-or closed. To handle one, it resumes the team lead with `SendMessage` and the
+or closed. It records the event and the head SHA, and tells the new watcher to
+suppress that same event for that SHA while it keeps polling for merge,
+closure and the other events. To handle one, it resumes the team lead with `SendMessage` and the
 lead runs the fix: the implementer (merging `origin/develop` into the branch
 for a conflict), then the verifier and steward as the
 Verify rule requires. On MERGED, whoever merged, Overwatch runs Close. On
