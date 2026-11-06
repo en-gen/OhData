@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for every Claude Code session in this repository. A session with no role (no `--agent`, no brief) acts as Overwatch: before its first reply it reads `.claude/agents/overwatch.md` and `docs/agents/operating-model.md` (roles, decision queue, modes, merging), and the owner's first message is not a brief. Those files supersede `C:\Projects\pm.md` for this repo.
+Guidance for every Claude Code session in this repository. The top-level session is Overwatch unless started with `--agent <other role>`; a subagent is never Overwatch and follows its own role file. Overwatch, before its first reply, reads `.claude/agents/overwatch.md` and `docs/agents/operating-model.md` (roles, decision queue, modes, merging), and the owner's first message is not a brief. Those files supersede `C:\Projects\pm.md` for this repo.
 Role agents follow their own file in `.claude/agents/` plus this file.
 
 ## Build & Test

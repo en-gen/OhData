@@ -34,8 +34,9 @@ queue, operating modes, the deliverable loop, merging, the board and state.
 
 Always pass `model` explicitly; a per-call `model` beats the role's
 frontmatter, so passing the same value guards against silent inheritance.
-Workflow scripts name `model` on every `agent()` call. Run independent agents
-in the background and in parallel.
+Workflow scripts name `model` on every `agent()` call. Overwatch dispatches
+team leads and lookups in the background and in parallel; a team lead runs its
+role agents in the foreground, one at a time.
 
 - Escalating a task to Opus needs the owner's go-ahead; never use a small
   model for the adversarial gate. Untyped agents inherit Opus, so never spawn
@@ -121,18 +122,23 @@ enacted only by the owner.
    changes logic or removes a check goes to the adversarial reviewer first.
 7. **PR.** The `steward` merges the current `origin/develop` into the branch
    (never a rebase), re-runs build and tests, reports the new head SHA, and
-   opens the PR. If the refresh merged anything on a verified path, the
+   opens the PR. A refresh conflict goes to the implementer to resolve, then
+   back through Verify.
+8. **Refresh check.** If the refresh merged anything on a verified path, the
    verifier checks the merge commit and the steward is resumed to enable
-   auto-merge. A refresh conflict goes to the implementer to resolve, then back
-   through Verify.
-8. **PR phase and close.** Overwatch owns the PR until it merges (below), then
-   runs cleanup and re-index (its role file).
+   auto-merge. The team lead reports the PR number only after this step.
+9. **PR phase and close.** Overwatch watches the PR and routes events to the
+   team lead (below), who runs the fix; Overwatch runs cleanup and re-index on
+   merge (its role file).
 
-Code under `src/`, `.github/workflows/`, `.husky/` and `.claude/settings.json`
-(it can gain hooks) gets steps 4 to 6. Operational Markdown (`CLAUDE.md`,
-`docs/agents/`, `docs/internals/`, `.claude/agents/`, templates) skips them;
-CodeRabbit and CI still check it. On that path there is no verifier pass, so
-auto-merge is enabled when the PR opens.
+Steps 4 to 6 are skipped only when every changed path is in this list:
+`CLAUDE.md`, `docs/**`, `.claude/agents/**`, `.github/pull_request_template.md`
+and `.github/ISSUE_TEMPLATE/**`. Anything not listed (`src/`, `.github/workflows/`,
+`.husky/`, `.claude/settings.json`, build files) takes the full loop.
+CodeRabbit and CI still check a skipped path. On it the team lead applies the
+`needs-owner` check itself, there is no verifier pass so auto-merge is enabled
+when the PR opens, and the steward's pre-flight still runs the secrets scan
+and the commit-range check.
 
 Done-contract rules:
 
@@ -175,7 +181,7 @@ refuses a self-approval, so no agent votes.
   autoMergeRequest`).
 - `needs-owner` instead, auto-merge off, for: a public API change, a breaking
   or wire-visible behaviour change, a new feature, a spec interpretation, or
-  anything touching release or packaging. Bugfixes, tests, docs and internal
+  anything touching release or packaging, a change to the agent workflow (`CLAUDE.md`, `.claude/`, `docs/agents/`), or a change that reverses a `docs/internals/` decision. Bugfixes, tests, docs and internal
   refactors with no wire change auto-merge. Unclear significance defaults to
   `needs-owner`. The plan names which applies; Planning may tighten a mode,
   never loosen it, and the verifier checks the diff against these criteria: a
@@ -184,7 +190,7 @@ refuses a self-approval, so no agent votes.
   requested": fix a valid finding, or reply with the
   reason when it is wrong, then resolve the thread. An unresolved thread
   withholds approval.
-- Before pushing a fix to a PR, the implementer disables auto-merge
+- Before pushing a fix to a PR with auto-merge on, the implementer disables it
   (`gh pr merge <n> -R en-gen/OhData --disable-auto`); the steward re-enables
   it only after the verifier passes on the new head, and never on a
   `needs-owner` PR.
@@ -201,13 +207,25 @@ refuses a self-approval, so no agent votes.
 
 ### PR phase
 
-Overwatch starts one background `grunt` per open PR. It polls `gh pr view <n>
--R en-gen/OhData --json state,reviewDecision,statusCheckRollup,autoMergeRequest`
-at a sensible interval and reports the first event: merged, closed, changes
-requested, a failed check, or auto-merge off where it should be on. Overwatch
-reacts: it resumes the implementer for CodeRabbit threads or failed CI and runs
-Close on a merge. A desktop Overwatch may also use `bind_pr` and `set_monitor`
-for one PR; they are absent under `claude --agent`.
+Overwatch starts one background `grunt` as the watcher per open PR. It polls
+`gh pr view <n> -R en-gen/OhData --json state,reviewDecision,statusCheckRollup,autoMergeRequest,mergeStateStatus`
+at a sensible interval and exits on its first event, reporting it:
+
+- `state` is MERGED or CLOSED;
+- `reviewDecision` is CHANGES_REQUESTED, or APPROVED on a `needs-owner` PR;
+- any `statusCheckRollup` entry has a failing `conclusion` (FAILURE or TIMED_OUT);
+- `autoMergeRequest` is null on a PR that is not `needs-owner`;
+- `mergeStateStatus` is DIRTY or BEHIND (a conflict, or `develop` moved).
+
+Overwatch handles the event, then starts a new watcher, until the PR is merged
+or closed. To handle one, it resumes the team lead with `SendMessage` and the
+lead runs the fix: the implementer (merging `origin/develop` into the branch
+for a conflict or a moved `develop`), then the verifier and steward as the
+Verify rule requires. On MERGED, whoever merged, Overwatch runs Close. On
+APPROVED for a `needs-owner` PR it tells the owner once CI is green too;
+CodeRabbit's approval means its threads are resolved. A desktop Overwatch may also
+use `bind_pr` and `set_monitor` for one PR; they are absent under
+`claude --agent`.
 
 ## Issues and the board
 

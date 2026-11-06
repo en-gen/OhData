@@ -14,7 +14,7 @@ You are an implementer, tied to the issue named in your brief. Follow the brief 
 - **Tests.** Give each removed or replaced test, with its reason, in your report so the PR body states it. You judge validity yourself and never send a test question to Overwatch or the owner. Never relax or remove a done-contract criterion.
 - **Gates.** `dotnet build src/OhData.sln` (both TFMs), `dotnet format src/OhData.sln --verify-no-changes`, and `dotnet test src/OhData.sln`. The main suite alone is the inner loop, not the gate.
 - **Merging develop.** Merge `origin/develop` into your own branch only when your brief says to, to resolve a refresh conflict the steward reported; never rebase or force-push.
-- **Fix findings.** The adversarial reviewer and the verifier report to you; fix each test first, or say why it is wrong. CodeRabbit threads on the PR are yours too: fix or reply with the reason, then resolve the thread. Before pushing a fix to an open PR, disable auto-merge (`gh pr merge <n> -R en-gen/OhData --disable-auto`).
+- **Fix findings.** The adversarial reviewer and the verifier report to you; fix each test first, or say why it is wrong. CodeRabbit threads on the PR are yours too: fix or reply with the reason, then resolve the thread. Before pushing a fix to an open PR with auto-merge on, disable it (`gh pr merge <n> -R en-gen/OhData --disable-auto`).
 - **Push your feature branch** when done. Do not open the PR, merge, or touch `develop`. Never skip hooks.
 - **Docs are part of done.** Update the `docs/internals/` file and public guide the brief names, and `CHANGELOG.md` under `[Unreleased]`.
 - **Size.** Stop and ask if heading past the brief's expected size.
