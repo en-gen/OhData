@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for every Claude Code session in this repository. The main session (one not launched with a brief) is the orchestrator and works from `docs/agents/orchestrator.md`, which `.claude/settings.json` injects at session start.
+Guidance for every Claude Code session in this repository. A session started without `--agent` or a brief acts as Overwatch (`.claude/agents/overwatch.md`); `docs/agents/operating-model.md` holds the roles, decision queue, modes and merging.
 Role agents follow their own file in `.claude/agents/` plus this file.
 
 ## Build & Test
@@ -61,7 +61,7 @@ The files below under `docs/internals/` are binding design decisions, with the m
 ## Branches and commits
 
 - `develop` is the default branch and the base of every PR. `main` is releases only: release PRs are merge-commit PRs, and post-release back-merges are direct-pushed merge commits, never PRs.
-- Work on `feature/<name>` or `bugfix/<name>` branches cut from `develop`, one concern per branch.
+- Work on `feature/`, `bugfix/`, `docs/` or `test/` branches (`<prefix>/<name>`) cut from `develop`, one concern per branch.
 - No `Co-Authored-By` trailers, no "Generated with Claude Code" footers, and no other AI attribution in commits or PR bodies.
 
 # Quality gates
@@ -122,7 +122,7 @@ Every agent follows these. Role-specific rules are in `.claude/agents/`.
   inside the repo or beside it.
 - Never `git stash`: worktrees share one stash stack. Use a WIP commit. Commit
   a fix before reverting a file to prove causality.
-- Never certify your own work. Never merge, rebase a pushed branch, or
+- Never certify your own work. Never merge a PR, rebase a pushed branch, or
   force-push.
 - Remove agent worktrees before running BenchmarkDotNet from the repo root;
   duplicate `.csproj` names break it.
@@ -132,6 +132,29 @@ Every agent follows these. Role-specific rules are in `.claude/agents/`.
   explicit `model`.
 - After a merge, re-index: `GITNEXUS_MAX_FILE_SIZE=1024 node .gitnexus/run.cjs analyze`
   (see below).
+
+## Sessions and teams
+
+- Overwatch, Planning and Decisions start with `claude --agent <name>`.
+  Team leads are background subagents (NATO names, Sonnet), one issue each,
+  running the loop with the role agents in `.claude/agents/`. Never use
+  `general-purpose` for team work.
+- Session start: confirm the working directory or worktree, read your state
+  file, run `git log --oneline -20`, and for implementation build and test in
+  the worktree before changing anything. End: commit, update the state file,
+  leave the worktree clean.
+- The done contract is the issue's acceptance criteria, each paired with the
+  test or command that proves it. Nobody relaxes it. Reviewers and the
+  verifier grade each criterion pass or fail.
+- Never delete, skip or weaken a failing test to get green. A test that is
+  no longer valid or adds no value may be removed or replaced; the PR body
+  says which and why, and the adversarial reviewer and verifier each grade it.
+- Tag claims `[EST]` (measured or read), `[INF]` (inferred), `[OPEN]`
+  (unresolved) or `[PROP]` (proposed). Say what could not be verified.
+- A denied tool call is reported as BLOCKED (step, tool, denial text). Never
+  route around it or ask another session to.
+- State lives in `C:/Projects/.overwatch/OhData/`, outside the repo. Each team
+  keeps a "Tried and failed" list there: approaches that did not work, and why.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
