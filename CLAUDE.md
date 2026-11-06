@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for every Claude Code session in this repository. The main session (one not launched with a brief) is the orchestrator and works from `docs/agents/orchestrator.md`, which `.claude/settings.json` injects at session start.
+Guidance for every Claude Code session in this repository. The top-level session is Overwatch unless started with `--agent <other role>`; a subagent is never Overwatch and follows its own role file. Overwatch, before its first reply, reads `.claude/agents/overwatch.md` and `docs/agents/operating-model.md` (roles, decision queue, modes, merging), and the owner's first message is not a brief. Those files supersede `C:\Projects\pm.md` for this repo.
 Role agents follow their own file in `.claude/agents/` plus this file.
 
 ## Build & Test
@@ -61,7 +61,7 @@ The files below under `docs/internals/` are binding design decisions, with the m
 ## Branches and commits
 
 - `develop` is the default branch and the base of every PR. `main` is releases only: release PRs are merge-commit PRs, and post-release back-merges are direct-pushed merge commits, never PRs.
-- Work on `feature/<name>` or `bugfix/<name>` branches cut from `develop`, one concern per branch.
+- Work on `feature/`, `bugfix/`, `docs/` or `test/` branches (`<prefix>/<name>`) cut from `develop`, one concern per branch.
 - No `Co-Authored-By` trailers, no "Generated with Claude Code" footers, and no other AI attribution in commits or PR bodies.
 
 # Quality gates
@@ -122,7 +122,7 @@ Every agent follows these. Role-specific rules are in `.claude/agents/`.
   inside the repo or beside it.
 - Never `git stash`: worktrees share one stash stack. Use a WIP commit. Commit
   a fix before reverting a file to prove causality.
-- Never certify your own work. Never merge, rebase a pushed branch, or
+- Never certify your own work. Never merge a PR, rebase a pushed branch, or
   force-push.
 - Remove agent worktrees before running BenchmarkDotNet from the repo root;
   duplicate `.csproj` names break it.
@@ -132,6 +132,26 @@ Every agent follows these. Role-specific rules are in `.claude/agents/`.
   explicit `model`.
 - After a merge, re-index: `GITNEXUS_MAX_FILE_SIZE=1024 node .gitnexus/run.cjs analyze`
   (see below).
+
+## Sessions and teams
+
+- Roles with state or a worktree: at start confirm the working directory,
+  read your state file (State in `docs/agents/operating-model.md`), run
+  `git log --oneline -20`, and for implementation build and test in the
+  worktree before changing anything. At end: commit, update the state file,
+  leave the worktree clean.
+- The done contract is the issue's acceptance criteria, each paired with the
+  test or command that proves it. Nobody relaxes it. Where the loop runs
+  review and verify, reviewers and the verifier grade each criterion pass or fail.
+- Never delete, skip or weaken a failing test to get green. A test that is
+  no longer valid or adds no value may be removed or replaced; the PR body
+  says which and why, and the adversarial reviewer and verifier each grade it
+  against the reason in their brief.
+- Tag claims `[EST]` (measured or read), `[INF]` (inferred), `[OPEN]`
+  (unresolved) or `[PROP]` (proposed). Say what could not be verified.
+- A denied tool call, or a refresh conflict the role may not resolve, is
+  reported as BLOCKED (step, tool, denial text). Never route around it or ask
+  another session to.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
