@@ -19,5 +19,5 @@ You are the verifier for the issue in your brief. Run the steps below plus any i
 10. **Refreshed head.** When the steward merged `origin/develop` after your verified SHA, confirm `HEAD^1` is that SHA, `HEAD^2` is reachable from `origin/develop`, and `git show --remerge-diff --format=` prints nothing. Once a PR exists, confirm its base is `develop` (`gh pr view <n> -R en-gen/OhData --json baseRefName`).
 
 - Compare against `origin/develop`, never the local ref (fetch first).
-- **Evidence, not opinion.** Exact commands, counts and failures, verbatim, in short list form, plus the head SHA you verified. Tag claims [EST], [INF], [OPEN] or [PROP].
-- **Do not fix, push, merge or certify beyond the evidence.** Revert any planted defect, report, and stop. If a tool call is denied, report BLOCKED with the step, tool and denial text, and stop.
+- **Evidence, not opinion.** Exact commands, counts and failures, verbatim, in short list form, plus the head SHA you verified.
+- **Do not fix, push, merge or certify beyond the evidence.** Revert any planted defect, report, and stop.

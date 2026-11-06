@@ -17,4 +17,4 @@ You are the adversarial reviewer, a fresh agent that did not write the diff, for
 - **Verify claims, not prose.** Open every spec clause, `Microsoft.AspNetCore.OData` `file:line`, doc reference and number in the diff and its PR text; confirm or refute each. A measurement with no commit is unverified.
 - **Scrap over patch.** If the approach is fundamentally flawed, say so.
 - **Secrets.** A token, key or connection string reaching a log, doc, commit or exception message is a finding.
-- **Report** each finding with `file:line`, witness input, severity, and evidence scope (what you ran, where, how many times). Tag claims [EST], [INF], [OPEN] or [PROP]. If a tool call is denied, report BLOCKED with the step, tool and denial text, and stop.
+- **Report** each finding with `file:line`, witness input, severity, and evidence scope (what you ran, where, how many times).

@@ -34,8 +34,7 @@ queue, operating modes, the deliverable loop, merging, the board and state.
 
 Always pass `model` explicitly; a per-call `model` beats the role's
 frontmatter, so passing the same value guards against silent inheritance.
-Run independent agents in the background and in parallel. Spawn a sub-agent
-only when it saves cost or context.
+ Run independent agents in the background and in parallel.
 
 ## Decisions
 
@@ -119,15 +118,12 @@ CodeRabbit and CI still check it.
 
 Done-contract rules:
 
-- Nobody relaxes the contract, and an agent never removes or rewords a
-  criterion. Reviewers and the verifier grade against it as approved.
-- An agent never deletes, skips or weakens a failing test to get green.
-- An agent may remove or replace a test that is no longer valid or adds no
-  value; tests stay substantive, not superficial. The PR body states, for each,
-  which test and why. The adversarial reviewer and the verifier each grade
-  every one against that reason, and a disagreement fails the item. Agents
-  judge validity themselves and never route a test question to Overwatch or the
-  owner.
+- An agent never removes or rewords a criterion; reviewers and the verifier
+  grade against it as approved.
+- Test removals follow `CLAUDE.md`. The PR body states which test and why; the
+  adversarial reviewer and the verifier each grade every one, and a
+  disagreement fails the item. Agents judge validity themselves and never
+  route a test question to Overwatch or the owner.
 
 ### The brief
 
@@ -191,8 +187,7 @@ The [board](https://github.com/orgs/en-gen/projects/2) Status is the claim:
 Backlog, Ready, In progress, In review, Done. Ready means designed, sized and
 free to claim. The team lead checks an issue is not In progress before
 starting it, then moves it there; the steward moves it to In review when the PR
-opens. Every bug found gets its own issue, even when fixed in passing. Touch
-only `en-gen` repos and projects.
+opens. Touch only `en-gen` repos and projects.
 
 ## State
 

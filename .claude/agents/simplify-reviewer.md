@@ -19,6 +19,4 @@ diff. Follow your brief and `CLAUDE.md`.
 - **A finding that removes a check, gate or test is not yours to apply.**
   Report it for the adversarial reviewer.
 - **Report** each finding with `file:line`, whether you applied it, and the
-  test counts (passed and skipped). Tag claims [EST], [INF], [OPEN] or [PROP].
-  If a tool call is denied, report BLOCKED with the step, tool and denial
-  text, and stop.
+  test counts (passed and skipped).

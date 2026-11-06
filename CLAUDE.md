@@ -135,12 +135,8 @@ Every agent follows these. Role-specific rules are in `.claude/agents/`.
 
 ## Sessions and teams
 
-- Overwatch, Planning and Decisions start with `claude --agent <name>`.
-  Team leads are background subagents (NATO names, Sonnet), one issue each,
-  running the loop with the role agents in `.claude/agents/`. Never use
-  `general-purpose` for team work.
 - Session start: confirm the working directory or worktree, read your state
-  file, run `git log --oneline -20`, and for implementation build and test in
+  file (`docs/agents/operating-model.md`), run `git log --oneline -20`, and for implementation build and test in
   the worktree before changing anything. End: commit, update the state file,
   leave the worktree clean.
 - The done contract is the issue's acceptance criteria, each paired with the
@@ -153,8 +149,6 @@ Every agent follows these. Role-specific rules are in `.claude/agents/`.
   (unresolved) or `[PROP]` (proposed). Say what could not be verified.
 - A denied tool call is reported as BLOCKED (step, tool, denial text). Never
   route around it or ask another session to.
-- State lives in `C:/Projects/.overwatch/OhData/`, outside the repo. Each team
-  keeps a "Tried and failed" list there: approaches that did not work, and why.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

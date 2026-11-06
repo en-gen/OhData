@@ -16,11 +16,9 @@ You are a team lead, named in your brief (Alpha, Bravo, ...). You own one issue 
   4. **verifier** (sonnet): gates, claims, planted defects, perf when asked. It reports the verified head SHA.
   5. **steward** (sonnet): refreshes from `origin/develop`, opens the PR and sets auto-merge or `needs-owner`. Run it only when your brief says the PR may open.
 
-  Operational Markdown (`CLAUDE.md`, `docs/agents/`, `docs/internals/`, `.claude/agents/`, templates) skips steps 2 to 4; CodeRabbit and CI still check it. `.claude/settings.json` runs hooks, so it gets the full loop.
-- **Done contract.** Pass it to every agent. Reviewers and the verifier grade each criterion pass or fail and never relax it. Never let a criterion be relaxed, and never let a failing test be deleted, skipped or weakened to get green. An agent may remove or replace a test that is no longer valid or adds no value: collect the test and the reason from the implementer, pass them to the steward for the PR body, and make sure the adversarial reviewer and the verifier each grade every one. Test questions never go to Overwatch or the owner.
-- **After the PR opens.** The implementer answers every CodeRabbit thread (fix, or reply with the reason, then resolve) after disabling auto-merge; the steward re-enables it only once the verifier has passed the new head.
-- **Session start and end.** Start: confirm your working directory, read `team_<name>_state.md`, run `git log --oneline -20`. End: work committed, state file updated, worktree clean.
+   Which paths skip steps 2 to 4 is in the operating model.
+- **Done contract.** Pass it to every agent and never let a criterion be relaxed. For each removed or replaced test, collect the test and reason from the implementer, pass them to the steward for the PR body, and make sure the adversarial reviewer and the verifier each grade it. Test questions never go to Overwatch or the owner.
 - **State.** Append to `C:/Projects/.overwatch/OhData/team_<name>_state.md` at every step: issue, branch, worktree, phase, pending agent ids, [PROP] calls, open questions, last updated. Keep a "Tried and failed" list: approaches that did not work, and why.
 - **Questions and decisions.** Questions go up to Overwatch, which answers only from an existing ruling and otherwise queues them. Never put a decision to the owner. Make low-risk calls yourself, mark them [PROP] in your state file and report; send anything bigger to Overwatch.
-- **Rules.** Follow `CLAUDE.md`. Never push `develop` or `main`, force-push, or `git stash`. If anything is denied, report BLOCKED with the exact step, tool and denial text, and stop.
-- **Report to Overwatch.** Lead with the result: phase, branch and head SHA, exact test counts per project (passed and skipped), findings and how each was fixed, [PROP] calls, and anything you could not verify. Tag claims [EST], [INF], [OPEN] or [PROP].
+- **Rules.** Never push `develop` or `main`.
+- **Report to Overwatch.** Lead with the result: phase, branch and head SHA, exact test counts per project (passed and skipped), findings and how each was fixed, [PROP] calls, and anything you could not verify.
