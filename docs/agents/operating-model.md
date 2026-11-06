@@ -179,13 +179,18 @@ refuses a self-approval, so no agent votes.
   --squash`) once the verifier has passed the head, or at once on a path that
   skips Verify, and confirms it took (`gh pr view <n> -R en-gen/OhData --json
   autoMergeRequest`).
-- `needs-owner` instead, auto-merge off, for: a public API change, a breaking
-  or wire-visible behaviour change, a new feature, a spec interpretation, or
-  anything touching release or packaging, a change to the agent workflow (`CLAUDE.md`, `.claude/`, `docs/agents/`), or a change that reverses a `docs/internals/` decision. Bugfixes, tests, docs and internal
-  refactors with no wire change auto-merge. Unclear significance defaults to
-  `needs-owner`. The plan names which applies; Planning may tighten a mode,
-  never loosen it, and the verifier checks the diff against these criteria: a
-  mismatch means `needs-owner`.
+- `needs-owner` instead, auto-merge off, for:
+  - a public API change;
+  - a breaking or wire-visible behaviour change;
+  - a new feature or a spec interpretation;
+  - anything touching release or packaging;
+  - a change to the agent workflow (`CLAUDE.md`, `.claude/`, `docs/agents/`);
+  - a change that reverses a `docs/internals/` decision.
+
+  Bugfixes, tests, docs and internal refactors with no wire change
+  auto-merge. Unclear significance defaults to `needs-owner`. The plan names
+  which applies; Planning may tighten a mode, never loosen it, and the verifier
+  checks the diff against these criteria: a mismatch means `needs-owner`.
 - The implementer answers every CodeRabbit review, including "changes
   requested": fix a valid finding, or reply with the
   reason when it is wrong, then resolve the thread. An unresolved thread
@@ -212,18 +217,20 @@ Overwatch starts one background `grunt` as the watcher per open PR. It polls
 at a sensible interval and exits on its first event, reporting it:
 
 - `state` is MERGED or CLOSED;
-- `reviewDecision` is CHANGES_REQUESTED, or APPROVED on a `needs-owner` PR;
+- `reviewDecision` is CHANGES_REQUESTED;
+- on a `needs-owner` PR only, `reviewDecision` is APPROVED and every `statusCheckRollup` entry has finished with no failing `conclusion` (the watcher keeps waiting until both hold);
 - any `statusCheckRollup` entry has a failing `conclusion` (FAILURE or TIMED_OUT);
 - `autoMergeRequest` is null on a PR that is not `needs-owner`;
-- `mergeStateStatus` is DIRTY or BEHIND (a conflict, or `develop` moved).
+- `mergeStateStatus` is DIRTY (a conflict).
 
 Overwatch handles the event, then starts a new watcher, until the PR is merged
 or closed. To handle one, it resumes the team lead with `SendMessage` and the
 lead runs the fix: the implementer (merging `origin/develop` into the branch
-for a conflict or a moved `develop`), then the verifier and steward as the
+for a conflict), then the verifier and steward as the
 Verify rule requires. On MERGED, whoever merged, Overwatch runs Close. On
-APPROVED for a `needs-owner` PR it tells the owner once CI is green too;
-CodeRabbit's approval means its threads are resolved. A desktop Overwatch may also
+the `needs-owner` event it tells the owner once; CodeRabbit's approval means
+its threads are resolved. `develop` moving alone is not an event, because
+`protect-develop` does not require branches to be up to date. A desktop Overwatch may also
 use `bind_pr` and `set_monitor` for one PR; they are absent under
 `claude --agent`.
 
