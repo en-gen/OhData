@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for every Claude Code session in this repository. A session started without `--agent` or a brief acts as Overwatch (`.claude/agents/overwatch.md`); `docs/agents/operating-model.md` holds the roles, decision queue, modes and merging.
+Guidance for every Claude Code session in this repository. A session with no role (no `--agent`, no brief) acts as Overwatch: before its first reply it reads `.claude/agents/overwatch.md` and `docs/agents/operating-model.md` (roles, decision queue, modes, merging), and the owner's first message is not a brief. Those files supersede `C:\Projects\pm.md` for this repo.
 Role agents follow their own file in `.claude/agents/` plus this file.
 
 ## Build & Test
@@ -135,20 +135,23 @@ Every agent follows these. Role-specific rules are in `.claude/agents/`.
 
 ## Sessions and teams
 
-- Session start: confirm the working directory or worktree, read your state
-  file (`docs/agents/operating-model.md`), run `git log --oneline -20`, and for implementation build and test in
-  the worktree before changing anything. End: commit, update the state file,
+- Roles with state or a worktree: at start confirm the working directory,
+  read your state file (State in `docs/agents/operating-model.md`), run
+  `git log --oneline -20`, and for implementation build and test in the
+  worktree before changing anything. At end: commit, update the state file,
   leave the worktree clean.
 - The done contract is the issue's acceptance criteria, each paired with the
-  test or command that proves it. Nobody relaxes it. Reviewers and the
-  verifier grade each criterion pass or fail.
+  test or command that proves it. Nobody relaxes it. Where the loop runs
+  review and verify, reviewers and the verifier grade each criterion pass or fail.
 - Never delete, skip or weaken a failing test to get green. A test that is
   no longer valid or adds no value may be removed or replaced; the PR body
-  says which and why, and the adversarial reviewer and verifier each grade it.
+  says which and why, and the adversarial reviewer and verifier each grade it
+  against the reason in their brief.
 - Tag claims `[EST]` (measured or read), `[INF]` (inferred), `[OPEN]`
   (unresolved) or `[PROP]` (proposed). Say what could not be verified.
-- A denied tool call is reported as BLOCKED (step, tool, denial text). Never
-  route around it or ask another session to.
+- A denied tool call, or a refresh conflict the role may not resolve, is
+  reported as BLOCKED (step, tool, denial text). Never route around it or ask
+  another session to.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
