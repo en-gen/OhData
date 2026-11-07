@@ -215,7 +215,7 @@ refuses a self-approval, so no agent votes.
 Overwatch starts one background `grunt` as the watcher per open PR. It polls
 `gh pr view <n> -R en-gen/OhData --json state,reviewDecision,statusCheckRollup,autoMergeRequest,mergeStateStatus,headRefOid`
 and the unresolved review threads
-(`gh api graphql -f query='query{repository(owner:"en-gen",name:"OhData"){pullRequest(number:<n>){reviewThreads(first:100){nodes{id isResolved}}}}}'`)
+(`gh api graphql --paginate -f query='query($endCursor:String){repository(owner:"en-gen",name:"OhData"){pullRequest(number:<n>){reviewThreads(first:100,after:$endCursor){nodes{id isResolved} pageInfo{hasNextPage endCursor}}}}}'`, every page)
 at a sensible interval and exits on its first event, reporting it:
 
 - `state` is MERGED or CLOSED;
