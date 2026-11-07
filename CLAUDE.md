@@ -151,7 +151,9 @@ Every agent follows these. Role-specific rules are in `.claude/agents/`.
   (unresolved) or `[PROP]` (proposed). Say what could not be verified.
 - A denied tool call, or a refresh conflict the role may not resolve, is
   reported as BLOCKED (step, tool, denial text). Never route around it or ask
-  another session to.
+  another session to. The defined handling of a conflict is not routing around:
+  the team lead briefs the implementer, whose role resolves conflicts in its
+  own branch.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
