@@ -2854,10 +2854,14 @@ internal static class OhDataEndpointFactory
                 }
             }
 
+            HashSet<string> selectedKeys = ExpandEngine.ResolveSelectedJsonKeys(
+                selectedProps,
+                navItemType is not null ? new[] { navItemType } : ExpandEngine.RuntimeTypesOf(itemArray, null),
+                navSerializerOptions);
             foreach (JsonObject obj in json.OfType<JsonObject>())
             {
                 var toRemove = obj.Select(p => p.Key)
-                                 .Where(k => !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
+                                 .Where(k => !selectedKeys.Contains(k))
                                  .ToList();
                 foreach (string? k in toRemove) obj.Remove(k);
             }
@@ -2944,9 +2948,11 @@ internal static class OhDataEndpointFactory
         JsonObject node = ODataEntityNode(ctx, prefix, contextSegment, entity, jsonOptions, edmModel, odataId: odataId, etag: etag, omitNavsForType: omitNavsForType);
         if (selectedProps is { Count: > 0 })
         {
+            HashSet<string> selectedKeys = ExpandEngine.ResolveSelectedJsonKeys(
+                selectedProps, new[] { entity.GetType() }, jsonOptions ?? _pascalCaseSerializerOptions);
             var toRemove = node.Select(p => p.Key)
                              .Where(k => !k.StartsWith("@", StringComparison.Ordinal) &&
-                                         !selectedProps.Contains(k, StringComparer.OrdinalIgnoreCase))
+                                         !selectedKeys.Contains(k))
                              .ToList();
             foreach (string? key in toRemove) node.Remove(key);
         }

@@ -790,6 +790,13 @@ status codes or headers.
 
 ### Fixed
 
+- **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
+  The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
+  they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`
+  with empty objects. The strip now resolves each selected name to the key the serializer wrote for that CLR
+  member (the serializer contract, so `[JsonPropertyName]`, the policy and host modifiers are all honoured) and compares key to key, on the
+  collection, by-key, navigation-collection, nested-`$select` and pushed `$expand`/`$levels` paths.
+
 - **A `MappedEntitySetProfile` `GET /Set/$count` returned `MappedPageSize` instead of the total (#759).**
   The route counted the handler's windowed page. The mapped handler now recognises the count route
   and returns the whole filtered set, so the count is one provider `COUNT` that ignores `$top`/`$skip`.
