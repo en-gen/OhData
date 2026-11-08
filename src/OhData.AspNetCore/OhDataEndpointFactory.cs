@@ -47,6 +47,12 @@ namespace OhData;
 // means "no OhData-level limit" — the host's Kestrel MaxRequestBodySize still applies.
 internal sealed record OhDataBodyLimitMetadata(long MaxBytes);
 
+/// <summary>Marker on the collection POST route; resolves to that route's final <see cref="Endpoint"/> (#795).</summary>
+internal sealed class UpsertCreateGate
+{
+    public Endpoint? Endpoint { get; set; }
+}
+
 internal static class OhDataEndpointFactory
 {
     private static readonly MethodInfo _mapEntitySetMethod =
@@ -1966,75 +1972,84 @@ internal static class OhDataEndpointFactory
         }
 
         // Inline requirements (authenticated/role/claim) replay onto one AuthorizationPolicyBuilder.
-        var inlineRequirements = InlineRequirements(requirements);
-        if (inlineRequirements.Count > 0)
-        {
-            rb.RequireAuthorization(policy => AddInlineRequirements(policy, inlineRequirements));
-        }
-    }
-
-    private static List<AuthRequirement> InlineRequirements(IReadOnlyList<AuthRequirement> requirements) =>
-        requirements
+        var inlineRequirements = requirements
             .Where(r => r.Kind is AuthRequirementKind.AuthenticatedUser
                                or AuthRequirementKind.Role
                                or AuthRequirementKind.Claim)
             .ToList();
-
-    private static void AddInlineRequirements(
-        AuthorizationPolicyBuilder policy, IReadOnlyList<AuthRequirement> inlineRequirements)
-    {
-        foreach (var req in inlineRequirements)
+        if (inlineRequirements.Count > 0)
         {
-            switch (req.Kind)
+            rb.RequireAuthorization(policy =>
             {
-                case AuthRequirementKind.AuthenticatedUser:
-                    policy.RequireAuthenticatedUser();
-                    break;
-                case AuthRequirementKind.Role:
-                    policy.RequireRole(req.Values!.ToArray());
-                    break;
-                case AuthRequirementKind.Claim:
-                    if (req.Values is { Count: > 0 })
-                        policy.RequireClaim(req.Name!, req.Values);
-                    else
-                        policy.RequireClaim(req.Name!);
-                    break;
-            }
+                foreach (var req in inlineRequirements)
+                {
+                    switch (req.Kind)
+                    {
+                        case AuthRequirementKind.AuthenticatedUser:
+                            policy.RequireAuthenticatedUser();
+                            break;
+                        case AuthRequirementKind.Role:
+                            policy.RequireRole(req.Values!.ToArray());
+                            break;
+                        case AuthRequirementKind.Claim:
+                            if (req.Values is { Count: > 0 })
+                                policy.RequireClaim(req.Name!, req.Values);
+                            else
+                                policy.RequireClaim(req.Name!);
+                            break;
+                    }
+                }
+            });
         }
     }
 
     /// <summary>
-    /// #795: evaluates the endpoint-gate half of a rule imperatively, for a code path that runs
-    /// under another route's gate. Same requirement list and same outcome as the middleware would
-    /// give the route: challenge when unauthenticated, forbid when authenticated but refused.
+    /// #795: the create branch of an upsert PUT runs the collection POST's handler under the PUT
+    /// route's gate. This evaluates the POST endpoint's own authorization (group conventions,
+    /// fallback policy, Create rule) the way <c>AuthorizationMiddleware</c> would, so both entry
+    /// points reach one verdict. Returns null to proceed, or the handled response.
     /// </summary>
-    private static async Task<IResult?> CheckCoarseAuthAsync(
-        HttpContext ctx, IReadOnlyList<AuthRequirement> requirements)
+    private static async Task<IResult?> CheckCollectionPostGateAsync(HttpContext ctx, UpsertCreateGate gate)
     {
+        // Authorization middleware did not run for this request, so the collection POST is ungated too.
+        if (!ctx.Items.ContainsKey("__AuthorizationMiddlewareWithEndpointInvoked")) return null;
+
+        Endpoint endpoint = gate.Endpoint ??= ctx.RequestServices.GetRequiredService<EndpointDataSource>()
+            .Endpoints.FirstOrDefault(e => e.Metadata.Any(m => ReferenceEquals(m, gate)))
+            ?? throw new InvalidOperationException("The collection POST endpoint for the upsert create branch was not found.");
+
+        if (endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null) return null;
+
         var provider = ctx.RequestServices.GetRequiredService<IAuthorizationPolicyProvider>();
-        var policies = new List<AuthorizationPolicy>();
-        foreach (var req in requirements.Where(r => r.Kind == AuthRequirementKind.Policy))
-        {
-            policies.Add(await provider.GetPolicyAsync(req.Name!)
-                ?? throw new InvalidOperationException($"The authorization policy '{req.Name}' was not found."));
-        }
+        AuthorizationPolicy? policy = await AuthorizationPolicy.CombineAsync(
+            provider,
+            endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>(),
+            endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
 
-        var inline = InlineRequirements(requirements);
-        if (inline.Count > 0)
+        var requirementData = endpoint.Metadata.GetOrderedMetadata<IAuthorizationRequirementData>();
+        if (requirementData.Count > 0)
         {
-            var builder = new AuthorizationPolicyBuilder();
-            AddInlineRequirements(builder, inline);
-            policies.Add(builder.Build());
+            var reqPolicy = new AuthorizationPolicyBuilder();
+            foreach (IAuthorizationRequirementData rd in requirementData)
+            {
+                reqPolicy.AddRequirements(rd.GetRequirements().ToArray());
+            }
+            policy = policy is null ? reqPolicy.Build() : AuthorizationPolicy.Combine(policy, reqPolicy.Build());
         }
-        if (policies.Count == 0) return null;
+        if (policy is null) return null;
 
-        AuthorizationPolicy combined = AuthorizationPolicy.Combine(policies);
         var evaluator = ctx.RequestServices.GetRequiredService<IPolicyEvaluator>();
-        var authn = await evaluator.AuthenticateAsync(combined, ctx);
-        var authz = await evaluator.AuthorizeAsync(combined, authn, ctx, resource: null);
-        if (authz.Succeeded) return null;
-        string[] schemes = combined.AuthenticationSchemes.ToArray();
-        return authz.Challenged ? Results.Challenge(authenticationSchemes: schemes) : Results.Forbid(authenticationSchemes: schemes);
+        var authn = await evaluator.AuthenticateAsync(policy, ctx);
+        object resource = AppContext.TryGetSwitch(
+            "Microsoft.AspNetCore.Authorization.SuppressUseHttpContextAsAuthorizationResource", out bool useEndpoint) && useEndpoint
+            ? endpoint
+            : ctx;
+        var authz = await evaluator.AuthorizeAsync(policy, authn, ctx, resource);
+
+        bool proceed = false;
+        var handler = ctx.RequestServices.GetRequiredService<IAuthorizationMiddlewareResultHandler>();
+        await handler.HandleAsync(_ => { proceed = true; return Task.CompletedTask; }, ctx, policy, authz);
+        return proceed ? null : Results.Empty;
     }
 
     /// <summary>
@@ -3320,6 +3335,8 @@ internal static class OhDataEndpointFactory
         // Layer C applies coarse per-route auth. `keyBased` marks routes carrying a {key} segment, to
         // which Layer B (resource-based) auth attaches a load-by-key filter (see AttachResourceFilter);
         // collection-level routes (no {key}) pass keyBased: false.
+        UpsertCreateGate? upsertCreateGate = source.AllowUpsert && source.HasPost && source.HasPut ? new UpsertCreateGate() : null;
+
         void ApplyOperationAuth(IEndpointConventionBuilder rb, OhDataOperation category, string? boundOperationName = null, bool keyBased = true)
         {
             if (operationAuthRules is null) return; // legacy group-auth path governs instead
@@ -3414,13 +3431,14 @@ internal static class OhDataEndpointFactory
         }
 
         // #795: the create branch of an upsert PUT runs the Post handler under the Update gate, so
-        // the Create rule (coarse, then resource against the incoming model) is checked here.
+        // the collection POST's gate (coarse) and the Create resource check (incoming model) run here.
         async Task<IResult?> CheckUpsertCreateAuthAsync(HttpContext ctx, object model)
         {
+            if (upsertCreateGate is null) return null;
+            IResult? gateFail = await CheckCollectionPostGateAsync(ctx, upsertCreateGate);
+            if (gateFail is not null) return gateFail;
             OperationAuthRule? rule = ResolveOperationRule(OhDataOperation.Create, null);
             if (rule is null || rule.AllowAnonymous) return null;
-            IResult? coarseFail = await CheckCoarseAuthAsync(ctx, rule.Requirements);
-            if (coarseFail is not null) return coarseFail;
             return await CheckResourceAuthAsync(ctx, model, OhDataOperation.Create, boundOperationName: null);
         }
 
@@ -5460,6 +5478,7 @@ internal static class OhDataEndpointFactory
             // resource-based rule before the entity exists. Contrast the nav-POST create route
             // below (POST /{name}({key})/{nav}), which IS key-based and keeps keyBased: true.
             ApplyOperationAuth(rb, OhDataOperation.Create, keyBased: false);
+            if (upsertCreateGate is not null) rb.WithMetadata(upsertCreateGate);
         }
 
         if (source.HasPut)
