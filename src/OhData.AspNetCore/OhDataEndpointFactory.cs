@@ -1966,16 +1966,19 @@ internal static class OhDataEndpointFactory
         }
 
         // Inline requirements (authenticated/role/claim) replay onto one AuthorizationPolicyBuilder.
-        var inlineRequirements = requirements
-            .Where(r => r.Kind is AuthRequirementKind.AuthenticatedUser
-                               or AuthRequirementKind.Role
-                               or AuthRequirementKind.Claim)
-            .ToList();
+        var inlineRequirements = InlineRequirements(requirements);
         if (inlineRequirements.Count > 0)
         {
             rb.RequireAuthorization(policy => AddInlineRequirements(policy, inlineRequirements));
         }
     }
+
+    private static List<AuthRequirement> InlineRequirements(IReadOnlyList<AuthRequirement> requirements) =>
+        requirements
+            .Where(r => r.Kind is AuthRequirementKind.AuthenticatedUser
+                               or AuthRequirementKind.Role
+                               or AuthRequirementKind.Claim)
+            .ToList();
 
     private static void AddInlineRequirements(
         AuthorizationPolicyBuilder policy, IReadOnlyList<AuthRequirement> inlineRequirements)
@@ -2016,11 +2019,7 @@ internal static class OhDataEndpointFactory
                 ?? throw new InvalidOperationException($"The authorization policy '{req.Name}' was not found."));
         }
 
-        var inline = requirements
-            .Where(r => r.Kind is AuthRequirementKind.AuthenticatedUser
-                               or AuthRequirementKind.Role
-                               or AuthRequirementKind.Claim)
-            .ToList();
+        var inline = InlineRequirements(requirements);
         if (inline.Count > 0)
         {
             var builder = new AuthorizationPolicyBuilder();
