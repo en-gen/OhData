@@ -2081,10 +2081,9 @@ internal static class ExpandEngine
         return json;
     }
 
-    // #768: $select names are EDM identifiers; payload keys are what the serializer wrote. Maps each
-    // selected name to that key through the one derivation navigation omission uses
-    // (ResolveNavigationJsonKey), per runtime type, so the strip compares key to key. A name no
-    // type declares (dynamic/open property) is kept under both its literal and policy-converted spelling.
+    // $select names are EDM identifiers; payload keys are what the serializer wrote. Maps each name to
+    // its key via ResolveNavigationJsonKey, per runtime type. A name no type declares (dynamic
+    // property) is kept under both its literal and policy-converted spelling.
     internal static HashSet<string> ResolveSelectedJsonKeys(
         IReadOnlyList<string> edmNames, IEnumerable<Type> clrTypes, JsonSerializerOptions? serializerOptions)
     {

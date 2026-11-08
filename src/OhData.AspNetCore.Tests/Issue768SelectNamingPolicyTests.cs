@@ -14,10 +14,9 @@ using Xunit;
 
 namespace OhData.AspNetCore.Tests;
 
-// #768: $select/$expand names are EDM identifiers; payload keys are policy-converted. Every
-// projecting path must compare the key the serializer wrote, so multi-word members survive under
-// snake_case / kebab-case. Fixtures vary the naming policy, multi-word property AND navigation
-// names, a derived runtime type with its own multi-word property, and a [JsonPropertyName] member.
+// #768: every $select projecting path must compare the key the serializer wrote, not the EDM name.
+// Fixtures vary the naming policy, multi-word property and navigation names, a derived runtime type
+// and a [JsonPropertyName] member.
 
 public sealed class Sn768Phone
 {
