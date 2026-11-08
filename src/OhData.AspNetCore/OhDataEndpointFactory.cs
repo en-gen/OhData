@@ -2004,10 +2004,9 @@ internal static class OhDataEndpointFactory
     }
 
     /// <summary>
-    /// #795: the create branch of an upsert PUT runs the collection POST's handler under the PUT
-    /// route's gate. This evaluates the POST endpoint's own authorization (group conventions,
-    /// fallback policy, Create rule) the way <c>AuthorizationMiddleware</c> would, so both entry
-    /// points reach one verdict. Returns null to proceed, or the handled response.
+    /// #795: evaluates the collection POST endpoint's own authorization (group conventions, fallback
+    /// policy, Create rule) as <c>AuthorizationMiddleware</c> would, for the upsert create branch.
+    /// Returns null to proceed, or the handled response.
     /// </summary>
     private static async Task<IResult?> CheckCollectionPostGateAsync(HttpContext ctx, UpsertCreateGate gate)
     {
@@ -2018,7 +2017,8 @@ internal static class OhDataEndpointFactory
         if (!ctx.Items.ContainsKey("__AuthorizationMiddlewareWithEndpointInvoked"))
         {
             // Like EndpointMiddleware: authorization metadata with no authorization middleware fails closed
-            // unless the host suppressed that check; with no such metadata the POST is ungated too.
+            // unless the host suppressed that check. Also counting AuthorizationPolicy metadata (upstream
+            // checks IAuthorizeData only) fails closed more often, never less.
             bool hasAuthMetadata = endpoint.Metadata.GetMetadata<IAuthorizeData>() is not null
                 || endpoint.Metadata.GetMetadata<AuthorizationPolicy>() is not null;
             if (hasAuthMetadata
@@ -2026,8 +2026,9 @@ internal static class OhDataEndpointFactory
             {
                 throw new InvalidOperationException(
                     $"Endpoint {endpoint.DisplayName} contains authorization metadata, but a middleware was not found " +
-                    "that supports authorization. Configure your application startup by adding app.UseAuthorization() " +
-                    "inside the call to Configure(..) in the application startup code, between app.UseRouting() and app.UseEndpoints(...).");
+                    "that supports authorization." + Environment.NewLine +
+                    "Configure your application startup by adding app.UseAuthorization() in the application startup code. " +
+                    "If there are calls to app.UseRouting() and app.UseEndpoints(...), the call to app.UseAuthorization() must go between them.");
             }
             return null;
         }

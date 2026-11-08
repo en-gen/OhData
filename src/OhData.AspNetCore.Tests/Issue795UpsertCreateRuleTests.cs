@@ -12,8 +12,10 @@ using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using OhData;
 using Xunit;
 
@@ -511,5 +513,101 @@ public class Issue795UpsertCreateRuleTests
         Assert.NotEqual(HttpStatusCode.Created, post);
         Assert.NotEqual(HttpStatusCode.Created, put);
         Assert.Equal(0, UpsertAnonAdminCreateProfile.C[0]);
+    }
+
+    private sealed class ExceptionCapture : ILoggerProvider, ILogger
+    {
+        public readonly List<string> Messages = [];
+        public ILogger CreateLogger(string categoryName) => this;
+        public void Dispose() { }
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (exception is not null) lock (Messages) Messages.Add(exception.Message);
+        }
+    }
+
+    private static async Task<TestFixture> BuildMisorderedAsync<TProfile>(
+        Action<RouteGroupBuilder>? group = null, bool suppressUnhandledSecurityCheck = false,
+        ExceptionCapture? capture = null)
+        where TProfile : class, IEntitySetProfile
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddAuthentication(PerOpAuthHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, PerOpAuthHandler>(PerOpAuthHandler.SchemeName, _ => { });
+        builder.Services.AddAuthorization();
+        if (capture is not null) builder.Logging.AddProvider(capture);
+        if (suppressUnhandledSecurityCheck)
+            builder.Services.Configure<RouteOptions>(o => o.SuppressCheckForUnhandledSecurityMetadata = true);
+        builder.Services.AddOhData(o => { o.WithPrefix("/odata"); o.AddEntitySetProfile<TProfile>(); });
+        var app = builder.Build();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.UseRouting();
+        group?.Invoke(app.MapOhData());
+        if (group is null) app.MapOhData();
+        await app.StartAsync();
+        return new TestFixture(app);
+    }
+
+    private static async Task<(string? Message, HttpStatusCode? Status)> SendCatchingAsync(
+        TestFixture fx, HttpMethod m, string path, int id)
+    {
+        try
+        {
+            var r = await fx.Client.SendAsync(Req(m, path, null, null, Body(id)));
+            return (await r.Content.ReadAsStringAsync(), r.StatusCode);
+        }
+        catch (InvalidOperationException ex) { return (ex.Message, null); }
+    }
+
+    // Upstream EndpointMiddleware checks IAuthorizeData only; the gate also fails closed on an
+    // AuthorizationPolicy-only endpoint, which WithMetadata(policy) produces (no IAuthorizeData).
+    [Fact]
+    public async Task Misordered_PolicyOnlyMetadata_CreateFailsClosed_PostNotReached()
+    {
+        var policy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
+        var capture = new ExceptionCapture();
+        await using var fx = await BuildMisorderedAsync<UpsertAnonNoCreateProfile>(g => g.WithMetadata(policy), capture: capture);
+        Array.Clear(UpsertAnonNoCreateProfile.C);
+
+        var put = await SendCatchingAsync(fx, HttpMethod.Put, "/odata/UpsertAnonNoCreate(9202)", 9202);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, put.Status);
+        Assert.Contains(capture.Messages, m => m.Contains("contains authorization metadata, but a middleware was not found"));
+        Assert.Equal(0, UpsertAnonNoCreateProfile.C[0]);
+    }
+
+    [Fact]
+    public async Task Misordered_ThrowMessageMatchesEndpointMiddleware()
+    {
+        var capture = new ExceptionCapture();
+        await using var fx = await BuildMisorderedAsync<UpsertAnonAdminCreateProfile>(capture: capture);
+        var put = await SendCatchingAsync(fx, HttpMethod.Put, "/odata/UpsertAnonAdmin(9302)", 9302);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, put.Status);
+        string thrown = Assert.Single(capture.Messages, m => m.Contains("contains authorization metadata"));
+        Assert.EndsWith(
+            " contains authorization metadata, but a middleware was not found that supports authorization."
+            + Environment.NewLine
+            + "Configure your application startup by adding app.UseAuthorization() in the application startup code. "
+            + "If there are calls to app.UseRouting() and app.UseEndpoints(...), the call to app.UseAuthorization() must go between them.",
+            thrown);
+    }
+
+    // With the host's opt-out set, EndpointMiddleware lets the POST through, and the PUT create follows it.
+    [Fact]
+    public async Task Misordered_SuppressUnhandledSecurityCheck_PutCreateMatchesPost()
+    {
+        await using var fx = await BuildMisorderedAsync<UpsertAnonAdminCreateProfile>(suppressUnhandledSecurityCheck: true);
+
+        var post = await SendCatchingAsync(fx, HttpMethod.Post, "/odata/UpsertAnonAdmin", 9401);
+        var put = await SendCatchingAsync(fx, HttpMethod.Put, "/odata/UpsertAnonAdmin(9402)", 9402);
+
+        Assert.Equal(HttpStatusCode.Created, post.Status);
+        Assert.Equal(post.Status, put.Status);
     }
 }
