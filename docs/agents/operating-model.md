@@ -213,15 +213,15 @@ refuses a self-approval, so no agent votes.
 ### PR phase
 
 Overwatch starts one background `grunt` as the watcher per open PR. It polls
-`gh pr view <n> -R en-gen/OhData --json state,reviewDecision,statusCheckRollup,autoMergeRequest,mergeStateStatus,headRefOid`
+`gh pr view <n> -R en-gen/OhData --json state,reviewDecision,statusCheckRollup,autoMergeRequest,mergeStateStatus,headRefOid,latestReviews`
 and the unresolved review threads
 (`gh api graphql --paginate -f query='query($endCursor:String){repository(owner:"en-gen",name:"OhData"){pullRequest(number:<n>){reviewThreads(first:100,after:$endCursor){nodes{id isResolved} pageInfo{hasNextPage endCursor}}}}}'`, every page)
 at a sensible interval and exits on its first event, reporting it:
 
 - `state` is MERGED or CLOSED;
 - `reviewDecision` is CHANGES_REQUESTED;
-- on a `needs-owner` PR only, the latest review by `coderabbitai[bot]` is APPROVED, there are zero unresolved review threads, `build-and-test` and `k6` are both present and have completed successfully, and every `statusCheckRollup` entry has finished with no failing `conclusion` (the watcher keeps waiting until all hold);
-- any `statusCheckRollup` entry has a failing `conclusion`: a completed conclusion other than SUCCESS, NEUTRAL or SKIPPED (so CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE and STALE count, as do FAILURE and TIMED_OUT);
+- on a `needs-owner` PR only, the `latestReviews` entry whose `author.login` is `coderabbitai` has state APPROVED, there are zero unresolved review threads, `build-and-test` and `k6` are both present and have completed successfully, and every `statusCheckRollup` entry has finished: each CheckRun with no failing `conclusion`, each StatusContext with `state` SUCCESS (the watcher keeps waiting until all hold);
+- any `statusCheckRollup` entry has a failing `conclusion`: a completed conclusion other than SUCCESS, NEUTRAL or SKIPPED (so CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE and STALE count, as do FAILURE and TIMED_OUT), or any StatusContext entry has `state` FAILURE or ERROR;
 - a review thread is newly unresolved;
 - `headRefOid` changes in a push the team did not make: the team lead disables auto-merge at once, then the verifier and steward run as the Verify rule requires;
 - `autoMergeRequest` is null on a PR that is not `needs-owner`;
@@ -233,7 +233,7 @@ suppress that same event for that SHA while it keeps polling for merge,
 closure and the other events. To handle one, it resumes the team lead with `SendMessage` and the
 lead runs the fix: the implementer (merging `origin/develop` into the branch
 for a conflict), then the verifier and steward as the
-Verify rule requires. On MERGED, whoever merged, Overwatch runs Close. On CLOSED without a merge it keeps the branch and worktree, moves the issue back to Ready on the board, records it in the state file and tells the owner. On
+Verify rule requires. On MERGED, whoever merged, Overwatch runs Close. On CLOSED without a merge it keeps the branch and worktree, comments both on the issue so a later team reuses them, moves the issue back to Ready on the board, records it in the state file and tells the owner. On
 the `needs-owner` event it tells the owner once; CodeRabbit's approval means
 its threads are resolved. `develop` moving alone is not an event, because
 `protect-develop` does not require branches to be up to date. A desktop Overwatch may also
