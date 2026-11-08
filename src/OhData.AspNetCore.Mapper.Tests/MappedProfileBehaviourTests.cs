@@ -199,6 +199,101 @@ public sealed class MappedProfileBehaviourTests
         Assert.Equal(3, page["@odata.count"]!.GetValue<long>());
     }
 
+    // ── /$count is the whole set, never a page (#759) ─────────────────────────────────────────
+
+    private static Task<MappedTestHost> StartWithManyRowsAsync() =>
+        MappedTestHost.StartAsync(db =>
+        {
+            for (int i = 0; i < 1500; i++)
+            {
+                db.Products.Add(new Product { Id = 5000 + i, Name = "N" + i, First = "f", Last = "l", Rank = i });
+            }
+
+            db.SaveChanges();
+        });
+
+    private static async Task<string> GetCountAsync(MappedTestHost host, string url)
+    {
+        using HttpResponseMessage response = await host.Client.GetAsync(url);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync();
+    }
+
+    [Theory]
+    [InlineData(MappedTestHost.Mapped)]
+    [InlineData(MappedTestHost.Control)]
+    public async Task TheCountRoute_OverMoreRowsThanThePage_IsTheTotal(string set)
+    {
+        await using MappedTestHost host = await StartWithManyRowsAsync();
+
+        string body = await GetCountAsync(host, $"/odata/{set}/$count");
+
+        Assert.Equal("1503", body);
+    }
+
+    [Theory]
+    [InlineData(MappedTestHost.Mapped)]
+    [InlineData(MappedTestHost.Control)]
+    public async Task TheCountRoute_WithAFilter_IsTheFilteredTotal(string set)
+    {
+        await using MappedTestHost host = await StartWithManyRowsAsync();
+
+        string body = await GetCountAsync(host, $"/odata/{set}/$count?$filter=Rank ge 100");
+
+        // 1400 of the 1500 added rows (Rank 100..1499); the three seeded rows rank 1..3.
+        Assert.Equal("1400", body);
+    }
+
+    // The router matches the literal case-insensitively and tolerates a trailing slash, so the count
+    // route must be recognised from the matched endpoint, not from the spelling of the path.
+    [Theory]
+    [InlineData(MappedTestHost.Mapped, "$COUNT")]
+    [InlineData(MappedTestHost.Mapped, "$Count")]
+    [InlineData(MappedTestHost.Mapped, "$count/")]
+    [InlineData(MappedTestHost.Mapped, "%24COUNT")]
+    [InlineData(MappedTestHost.Control, "$COUNT")]
+    [InlineData(MappedTestHost.Control, "$count/")]
+    public async Task TheCountRoute_IsTheTotal_WhateverTheSpellingOfTheSegment(string set, string segment)
+    {
+        await using MappedTestHost host = await StartWithManyRowsAsync();
+
+        string body = await GetCountAsync(host, $"/odata/{set}/{segment}");
+
+        Assert.Equal("1503", body);
+    }
+
+    [Fact]
+    public async Task TheCountRoute_IgnoresTopAndSkip()
+    {
+        await using MappedTestHost host = await StartWithManyRowsAsync();
+
+        string body = await GetCountAsync(host, $"/odata/{MappedTestHost.Mapped}/$count?$top=5&$skip=3");
+
+        Assert.Equal("1503", body);
+    }
+
+    [Fact]
+    public async Task TheCountRoute_OnATwoRowPage_IsTheTotal()
+    {
+        await using MappedTestHost host = await MappedTestHost.StartAsync();
+
+        string body = await GetCountAsync(host, $"/odata/{MappedTestHost.Paged}/$count");
+
+        Assert.Equal("3", body);
+    }
+
+    [Fact]
+    public async Task TheInlineCount_OverMoreRowsThanThePage_IsTheTotalWithANextLink()
+    {
+        await using MappedTestHost host = await StartWithManyRowsAsync();
+
+        JsonObject page = await host.GetJsonAsync($"/odata/{MappedTestHost.Mapped}?$count=true");
+
+        Assert.Equal(1000, page["value"]!.AsArray().Count);
+        Assert.Equal(1503, page["@odata.count"]!.GetValue<long>());
+        Assert.NotNull(page["@odata.nextLink"]);
+    }
+
     // ── Invariants a profile author can trip ──────────────────────────────────────────────────
 
     [Fact]
