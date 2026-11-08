@@ -244,6 +244,24 @@ public sealed class MappedProfileBehaviourTests
         Assert.Equal("1400", body);
     }
 
+    // The router matches the literal case-insensitively and tolerates a trailing slash, so the count
+    // route must be recognised from the matched endpoint, not from the spelling of the path.
+    [Theory]
+    [InlineData(MappedTestHost.Mapped, "$COUNT")]
+    [InlineData(MappedTestHost.Mapped, "$Count")]
+    [InlineData(MappedTestHost.Mapped, "$count/")]
+    [InlineData(MappedTestHost.Mapped, "%24COUNT")]
+    [InlineData(MappedTestHost.Control, "$COUNT")]
+    [InlineData(MappedTestHost.Control, "$count/")]
+    public async Task TheCountRoute_IsTheTotal_WhateverTheSpellingOfTheSegment(string set, string segment)
+    {
+        await using MappedTestHost host = await StartWithManyRowsAsync();
+
+        string body = await GetCountAsync(host, $"/odata/{set}/{segment}");
+
+        Assert.Equal("1503", body);
+    }
+
     [Fact]
     public async Task TheCountRoute_IgnoresTopAndSkip()
     {

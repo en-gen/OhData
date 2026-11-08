@@ -6,7 +6,9 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.OData.Query;
+using Microsoft.AspNetCore.Routing;
 
 namespace OhData.AspNetCore.Mapper;
 
@@ -203,9 +205,11 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
         });
     }
 
-    // The core does not tell a Priority-1 handler it is serving /$count (#748), so read the path.
+    // The core does not tell a Priority-1 handler it is serving /$count (#748). The matched route
+    // pattern is the signal: the request path varies in case, encoding and trailing slash.
     private static bool IsCountRoute(ODataQueryOptions<TModel> options) =>
-        options.Request.Path.Value?.EndsWith("/$count", StringComparison.Ordinal) == true;
+        (options.Request.HttpContext.GetEndpoint() as RouteEndpoint)
+            ?.RoutePattern.RawText?.EndsWith("/$count", StringComparison.Ordinal) == true;
 
     private int ResolvePageSize(int? requestedTop, ODataQueryOptions<TModel> options)
     {
