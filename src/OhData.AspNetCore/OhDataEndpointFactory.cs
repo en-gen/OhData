@@ -21,6 +21,7 @@ using System.Web;
 using System.Xml;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Infrastructure;
+using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -45,6 +46,12 @@ namespace OhData;
 // MapEntitySet) and enforced by the group-level write-body-size filter in MapAll. Absent metadata
 // means "no OhData-level limit" — the host's Kestrel MaxRequestBodySize still applies.
 internal sealed record OhDataBodyLimitMetadata(long MaxBytes);
+
+/// <summary>Marker on the collection POST route; resolves to that route's final <see cref="Endpoint"/> (#795).</summary>
+internal sealed class UpsertCreateGate
+{
+    public Endpoint? Endpoint { get; set; }
+}
 
 internal static class OhDataEndpointFactory
 {
@@ -1997,6 +2004,70 @@ internal static class OhDataEndpointFactory
     }
 
     /// <summary>
+    /// #795: evaluates the collection POST endpoint's own authorization (group conventions, fallback
+    /// policy, Create rule) as <c>AuthorizationMiddleware</c> would, for the upsert create branch.
+    /// Returns null to proceed, or the handled response.
+    /// </summary>
+    private static async Task<IResult?> CheckCollectionPostGateAsync(HttpContext ctx, UpsertCreateGate gate)
+    {
+        Endpoint endpoint = gate.Endpoint ??= ctx.RequestServices.GetRequiredService<EndpointDataSource>()
+            .Endpoints.FirstOrDefault(e => e.Metadata.Any(m => ReferenceEquals(m, gate)))
+            ?? throw new InvalidOperationException("The collection POST endpoint for the upsert create branch was not found.");
+
+        if (!ctx.Items.ContainsKey("__AuthorizationMiddlewareWithEndpointInvoked"))
+        {
+            // Like EndpointMiddleware: authorization metadata with no authorization middleware fails closed
+            // unless the host suppressed that check. Also counting AuthorizationPolicy metadata (upstream
+            // checks IAuthorizeData only) fails closed more often, never less.
+            bool hasAuthMetadata = endpoint.Metadata.GetMetadata<IAuthorizeData>() is not null
+                || endpoint.Metadata.GetMetadata<AuthorizationPolicy>() is not null;
+            if (hasAuthMetadata
+                && !ctx.RequestServices.GetRequiredService<IOptions<RouteOptions>>().Value.SuppressCheckForUnhandledSecurityMetadata)
+            {
+                throw new InvalidOperationException(
+                    $"Endpoint {endpoint.DisplayName} contains authorization metadata, but a middleware was not found " +
+                    "that supports authorization." + Environment.NewLine +
+                    "Configure your application startup by adding app.UseAuthorization() in the application startup code. " +
+                    "If there are calls to app.UseRouting() and app.UseEndpoints(...), the call to app.UseAuthorization() must go between them.");
+            }
+            return null;
+        }
+
+        if (endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null) return null;
+
+        var provider = ctx.RequestServices.GetRequiredService<IAuthorizationPolicyProvider>();
+        AuthorizationPolicy? policy = await AuthorizationPolicy.CombineAsync(
+            provider,
+            endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>(),
+            endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
+
+        var requirementData = endpoint.Metadata.GetOrderedMetadata<IAuthorizationRequirementData>();
+        if (requirementData.Count > 0)
+        {
+            var reqPolicy = new AuthorizationPolicyBuilder();
+            foreach (IAuthorizationRequirementData rd in requirementData)
+            {
+                reqPolicy.AddRequirements(rd.GetRequirements().ToArray());
+            }
+            policy = policy is null ? reqPolicy.Build() : AuthorizationPolicy.Combine(policy, reqPolicy.Build());
+        }
+        if (policy is null) return null;
+
+        var evaluator = ctx.RequestServices.GetRequiredService<IPolicyEvaluator>();
+        var authn = await evaluator.AuthenticateAsync(policy, ctx);
+        object resource = AppContext.TryGetSwitch(
+            "Microsoft.AspNetCore.Authorization.SuppressUseHttpContextAsAuthorizationResource", out bool useEndpoint) && useEndpoint
+            ? endpoint
+            : ctx;
+        var authz = await evaluator.AuthorizeAsync(policy, authn, ctx, resource);
+
+        bool proceed = false;
+        var handler = ctx.RequestServices.GetRequiredService<IAuthorizationMiddlewareResultHandler>();
+        await handler.HandleAsync(_ => { proceed = true; return Task.CompletedTask; }, ctx, policy, authz);
+        return proceed ? null : Results.Empty;
+    }
+
+    /// <summary>
     /// #487: does this registration require authorization ANYWHERE? The gate on every diagnostic
     /// below, and the reason none of them fires on a service that is simply public.
     /// <para>
@@ -3279,6 +3350,8 @@ internal static class OhDataEndpointFactory
         // Layer C applies coarse per-route auth. `keyBased` marks routes carrying a {key} segment, to
         // which Layer B (resource-based) auth attaches a load-by-key filter (see AttachResourceFilter);
         // collection-level routes (no {key}) pass keyBased: false.
+        UpsertCreateGate? upsertCreateGate = source.AllowUpsert && source.HasPost && source.HasPut ? new UpsertCreateGate() : null;
+
         void ApplyOperationAuth(IEndpointConventionBuilder rb, OhDataOperation category, string? boundOperationName = null, bool keyBased = true)
         {
             if (operationAuthRules is null) return; // legacy group-auth path governs instead
@@ -3370,6 +3443,18 @@ internal static class OhDataEndpointFactory
                 }
             }
             return null;
+        }
+
+        // #795: the create branch of an upsert PUT runs the Post handler under the Update gate, so
+        // the collection POST's gate (coarse) and the Create resource check (incoming model) run here.
+        async Task<IResult?> CheckUpsertCreateAuthAsync(HttpContext ctx, object model)
+        {
+            if (upsertCreateGate is null) return null;
+            IResult? gateFail = await CheckCollectionPostGateAsync(ctx, upsertCreateGate);
+            if (gateFail is not null) return gateFail;
+            OperationAuthRule? rule = ResolveOperationRule(OhDataOperation.Create, null);
+            if (rule is null || rule.AllowAnonymous) return null;
+            return await CheckResourceAuthAsync(ctx, model, OhDataOperation.Create, boundOperationName: null);
         }
 
         // Attach a per-request filter to a key-based route that loads the {key} entity and runs the
@@ -5408,6 +5493,7 @@ internal static class OhDataEndpointFactory
             // resource-based rule before the entity exists. Contrast the nav-POST create route
             // below (POST /{name}({key})/{nav}), which IS key-based and keeps keyBased: true.
             ApplyOperationAuth(rb, OhDataOperation.Create, keyBased: false);
+            if (upsertCreateGate is not null) rb.WithMetadata(upsertCreateGate);
         }
 
         if (source.HasPut)
@@ -5578,6 +5664,8 @@ internal static class OhDataEndpointFactory
                     bool wasCreated = false;
                     if (result is null && source.AllowUpsert && source.HasPost)
                     {
+                        IResult? upsertCreateAuthFail = await CheckUpsertCreateAuthAsync(ctx, model);
+                        if (upsertCreateAuthFail is not null) return upsertCreateAuthFail;
                         result = await WithExceptionMapping(s.InvokePostAsync(model, ct), source, ctx, OhDataOperation.Create, model: model);
                         wasCreated = true;
                     }

@@ -233,8 +233,11 @@ Key points:
   `Create` when the profile registers a navigation-`post` route (`POST /{Set}({key})/{Nav}`) and
   `Invoke` when it registers an entity-bound function or action. The collection `POST` needs no
   `GetById`: it evaluates its `Create` requirement against the deserialized model directly. Not
-  compatible with `AllowUpsert` create-on-`PUT` (a missing entity returns `404` before the handler
-  runs).
+  compatible with `AllowUpsert` create-on-`PUT` on the **Update** rule (a missing entity returns `404`
+  before the handler runs). On the create branch of an upsert `PUT` the **Create** rule must also pass
+  before `Post` runs: the create is authorized exactly as the collection `POST` would be (group-level
+  `RequireAuthorization`, the fallback policy and the Create rule), plus a Create `.RequireResource()`
+  evaluated against the incoming model. One configuration, an Update rule that names its own authentication scheme, is an open issue: see [#853](https://github.com/en-gen/OhData/issues/853). A `PUT` to an existing key needs Update only.
 - **On a collection-bound operation the requirement is dropped, and OhData says so at startup.** A
   collection-bound function or action is mapped as `/{Set}/{Name}` with no `{key}` segment, so there
   is no instance for the check to run against and the resource half of the rule governing it is not

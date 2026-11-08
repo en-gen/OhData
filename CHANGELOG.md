@@ -790,6 +790,7 @@ status codes or headers.
 
 ### Fixed
 
+- **An upsert `PUT` now authorizes its create branch like the collection `POST` (#795, security).** With `AllowUpsert`, a `PUT` to a missing key ran the `Post` handler under the Update rule alone, so a caller holding Update but not Create got `201 Created`, and an `AllowAnonymous()` Update rule also bypassed group-level `RequireAuthorization` and the fallback policy. The create branch now evaluates the collection `POST` endpoint's authorization (group, fallback policy, Create rule; `401` or `403` as the `POST` answers, through the host's `IAuthorizationMiddlewareResultHandler`) and the Create `.RequireResource()` check against the incoming model before `Post`. `PUT` to an existing key is unchanged.
 - **A `MappedEntitySetProfile` `GET /Set/$count` returned `MappedPageSize` instead of the total (#759).**
   The route counted the handler's windowed page. The mapped handler now recognises the count route
   and returns the whole filtered set, so the count is one provider `COUNT` that ignores `$top`/`$skip`.
