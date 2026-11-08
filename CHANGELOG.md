@@ -790,6 +790,12 @@ status codes or headers.
 
 ### Fixed
 
+- **An upsert `PUT` now requires the Create rule on its create branch (#795, security).** With
+  `AllowUpsert`, a `PUT` to a missing key ran the `Post` handler under the Update rule alone, so a caller
+  holding Update but not Create got `201 Created`; the Create rule and its `.RequireResource()` check were
+  skipped. The create branch now evaluates the Create rule (`403`, or `401` for an anonymous caller) and the
+  Create resource check against the incoming model before `Post`. `PUT` to an existing key is unchanged.
+
 - **`OhData.Client`'s `GetPropertyAsync` ignored `@odata.type` on a polymorphic property (#720).**
   The `value` envelope was deserialized with the plain `JsonOptions` instead of the polymorphism-aware
   read options every other read uses (#707), so a property declared as a polymorphic base (complex or

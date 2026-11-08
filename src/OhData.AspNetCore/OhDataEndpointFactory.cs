@@ -21,6 +21,7 @@ using System.Web;
 using System.Xml;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Infrastructure;
+using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -1972,28 +1973,69 @@ internal static class OhDataEndpointFactory
             .ToList();
         if (inlineRequirements.Count > 0)
         {
-            rb.RequireAuthorization(policy =>
-            {
-                foreach (var req in inlineRequirements)
-                {
-                    switch (req.Kind)
-                    {
-                        case AuthRequirementKind.AuthenticatedUser:
-                            policy.RequireAuthenticatedUser();
-                            break;
-                        case AuthRequirementKind.Role:
-                            policy.RequireRole(req.Values!.ToArray());
-                            break;
-                        case AuthRequirementKind.Claim:
-                            if (req.Values is { Count: > 0 })
-                                policy.RequireClaim(req.Name!, req.Values);
-                            else
-                                policy.RequireClaim(req.Name!);
-                            break;
-                    }
-                }
-            });
+            rb.RequireAuthorization(policy => AddInlineRequirements(policy, inlineRequirements));
         }
+    }
+
+    private static void AddInlineRequirements(
+        AuthorizationPolicyBuilder policy, IReadOnlyList<AuthRequirement> inlineRequirements)
+    {
+        foreach (var req in inlineRequirements)
+        {
+            switch (req.Kind)
+            {
+                case AuthRequirementKind.AuthenticatedUser:
+                    policy.RequireAuthenticatedUser();
+                    break;
+                case AuthRequirementKind.Role:
+                    policy.RequireRole(req.Values!.ToArray());
+                    break;
+                case AuthRequirementKind.Claim:
+                    if (req.Values is { Count: > 0 })
+                        policy.RequireClaim(req.Name!, req.Values);
+                    else
+                        policy.RequireClaim(req.Name!);
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// #795: evaluates the endpoint-gate half of a rule imperatively, for a code path that runs
+    /// under another route's gate. Same requirement list and same outcome as the middleware would
+    /// give the route: challenge when unauthenticated, forbid when authenticated but refused.
+    /// </summary>
+    private static async Task<IResult?> CheckCoarseAuthAsync(
+        HttpContext ctx, IReadOnlyList<AuthRequirement> requirements)
+    {
+        var provider = ctx.RequestServices.GetRequiredService<IAuthorizationPolicyProvider>();
+        var policies = new List<AuthorizationPolicy>();
+        foreach (var req in requirements.Where(r => r.Kind == AuthRequirementKind.Policy))
+        {
+            policies.Add(await provider.GetPolicyAsync(req.Name!)
+                ?? throw new InvalidOperationException($"The authorization policy '{req.Name}' was not found."));
+        }
+
+        var inline = requirements
+            .Where(r => r.Kind is AuthRequirementKind.AuthenticatedUser
+                               or AuthRequirementKind.Role
+                               or AuthRequirementKind.Claim)
+            .ToList();
+        if (inline.Count > 0)
+        {
+            var builder = new AuthorizationPolicyBuilder();
+            AddInlineRequirements(builder, inline);
+            policies.Add(builder.Build());
+        }
+        if (policies.Count == 0) return null;
+
+        AuthorizationPolicy combined = AuthorizationPolicy.Combine(policies);
+        var evaluator = ctx.RequestServices.GetRequiredService<IPolicyEvaluator>();
+        var authn = await evaluator.AuthenticateAsync(combined, ctx);
+        var authz = await evaluator.AuthorizeAsync(combined, authn, ctx, resource: null);
+        if (authz.Succeeded) return null;
+        string[] schemes = combined.AuthenticationSchemes.ToArray();
+        return authz.Challenged ? Results.Challenge(authenticationSchemes: schemes) : Results.Forbid(authenticationSchemes: schemes);
     }
 
     /// <summary>
@@ -3370,6 +3412,17 @@ internal static class OhDataEndpointFactory
                 }
             }
             return null;
+        }
+
+        // #795: the create branch of an upsert PUT runs the Post handler under the Update gate, so
+        // the Create rule (coarse, then resource against the incoming model) is checked here.
+        async Task<IResult?> CheckUpsertCreateAuthAsync(HttpContext ctx, object model)
+        {
+            OperationAuthRule? rule = ResolveOperationRule(OhDataOperation.Create, null);
+            if (rule is null || rule.AllowAnonymous) return null;
+            IResult? coarseFail = await CheckCoarseAuthAsync(ctx, rule.Requirements);
+            if (coarseFail is not null) return coarseFail;
+            return await CheckResourceAuthAsync(ctx, model, OhDataOperation.Create, boundOperationName: null);
         }
 
         // Attach a per-request filter to a key-based route that loads the {key} entity and runs the
@@ -5578,6 +5631,8 @@ internal static class OhDataEndpointFactory
                     bool wasCreated = false;
                     if (result is null && source.AllowUpsert && source.HasPost)
                     {
+                        IResult? upsertCreateAuthFail = await CheckUpsertCreateAuthAsync(ctx, model);
+                        if (upsertCreateAuthFail is not null) return upsertCreateAuthFail;
                         result = await WithExceptionMapping(s.InvokePostAsync(model, ct), source, ctx, OhDataOperation.Create, model: model);
                         wasCreated = true;
                     }
