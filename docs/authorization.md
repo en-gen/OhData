@@ -237,7 +237,7 @@ Key points:
   before the handler runs). On the create branch of an upsert `PUT` the **Create** rule must also pass
   before `Post` runs: the create is authorized exactly as the collection `POST` would be (group-level
   `RequireAuthorization`, the fallback policy and the Create rule), plus a Create `.RequireResource()`
-  evaluated against the incoming model. The one documented divergence: when the Update rule names its own authentication scheme, the Create policy is judged against that scheme's principal (see [internals](internals/authorization.md)). A `PUT` to an existing key needs Update only.
+  evaluated against the incoming model. One configuration, an Update rule that names its own authentication scheme, is an open issue: see [#853](https://github.com/en-gen/OhData/issues/853). A `PUT` to an existing key needs Update only.
 - **On a collection-bound operation the requirement is dropped, and OhData says so at startup.** A
   collection-bound function or action is mapped as `/{Set}/{Name}` with no `{key}` segment, so there
   is no instance for the check to run against and the resource half of the rule governing it is not
