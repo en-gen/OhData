@@ -6,11 +6,13 @@ using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using OhData;
 using Xunit;
@@ -213,6 +215,30 @@ internal sealed class UpsertTeapotResultHandler : IAuthorizationMiddlewareResult
     }
 }
 
+internal sealed class UpsertAnonCreateProfile : UpsertProfileBase
+{
+    public static readonly int[] C = new int[2];
+    protected override int[] Counters => C;
+    public UpsertAnonCreateProfile()
+    {
+        EntitySetName = "UpsertAnonCreate";
+        ConfigureAuthorization(a => a
+            .Create(c => c.AllowAnonymous())
+            .Update(u => u.AllowAnonymous()));
+    }
+}
+
+internal sealed class UpsertAnonNoCreateOtherProfile : UpsertProfileBase
+{
+    public static readonly int[] C = new int[2];
+    protected override int[] Counters => C;
+    public UpsertAnonNoCreateOtherProfile()
+    {
+        EntitySetName = "UpsertAnonNoCreate";
+        ConfigureAuthorization(a => a.Update(u => u.AllowAnonymous()));
+    }
+}
+
 public class Issue795UpsertCreateRuleTests
 {
     private static HttpRequestMessage Req(
@@ -404,5 +430,86 @@ public class Issue795UpsertCreateRuleTests
             o.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, UpsertTeapotResultHandler>();
         });
         await AssertSameVerdictAsync(fx, "UpsertRole", UpsertCreateRoleProfile.C, (HttpStatusCode)418, "bob", null);
+    }
+
+    [Fact]
+    public async Task TwoProfiles_EachUsesOwnPostGate()
+    {
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o =>
+        {
+            o.AddEntitySetProfile<UpsertAnonUpdateProfile>();
+            o.AddEntitySetProfile<UpsertAnonAdminCreateProfile>();
+        });
+        var a = await fx.Client.SendAsync(Req(HttpMethod.Put, "/odata/UpsertAnon(5001)", "bob", null, Body(5001)));
+        var b = await fx.Client.SendAsync(Req(HttpMethod.Put, "/odata/UpsertAnonAdmin(5002)", "bob", null, Body(5002)));
+        Assert.Equal(HttpStatusCode.Created, a.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, b.StatusCode);
+    }
+
+    [Fact]
+    public async Task NamedRegistrations_EachUsesOwnGroup()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddAuthentication(PerOpAuthHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, PerOpAuthHandler>(PerOpAuthHandler.SchemeName, _ => { });
+        builder.Services.AddAuthorization();
+        builder.Services.AddOhData("a", o => { o.WithPrefix("/a"); o.AddEntitySetProfile<UpsertAnonNoCreateProfile>(); });
+        builder.Services.AddOhData("b", o => { o.WithPrefix("/b"); o.AddEntitySetProfile<UpsertAnonNoCreateOtherProfile>(); });
+        var app = builder.Build();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapOhData("a").RequireAuthorization();
+        app.MapOhData("b");
+        await app.StartAsync();
+        await using var fx = new TestFixture(app);
+        var putB = await fx.Client.SendAsync(Req(HttpMethod.Put, "/b/UpsertAnonNoCreate(6002)", null, null, Body(6002)));
+        var putA = await fx.Client.SendAsync(Req(HttpMethod.Put, "/a/UpsertAnonNoCreate(6004)", null, null, Body(6004)));
+        Assert.Equal(HttpStatusCode.Created, putB.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, putA.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreateAllowAnonymous_GroupAuth_MatchesPost()
+    {
+        await using var fx = await PerOpAuthTestHost.BuildAsync(
+            o => o.AddEntitySetProfile<UpsertAnonCreateProfile>(), groupConfigure: g => g.RequireAuthorization());
+        var post = await fx.Client.SendAsync(Req(HttpMethod.Post, "/odata/UpsertAnonCreate", null, null, Body(7001)));
+        var put = await fx.Client.SendAsync(Req(HttpMethod.Put, "/odata/UpsertAnonCreate(7002)", null, null, Body(7002)));
+        Assert.Equal(HttpStatusCode.Created, post.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, put.StatusCode);
+    }
+
+    // UseAuthorization before UseRouting never sets the endpoint-invoked key, so the PUT create
+    // must fail closed the way EndpointMiddleware does for the POST instead of skipping the gate.
+    [Fact]
+    public async Task Misordered_AuthBeforeRouting_CreateFailsClosed_PostNotReached()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddAuthentication(PerOpAuthHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, PerOpAuthHandler>(PerOpAuthHandler.SchemeName, _ => { });
+        builder.Services.AddAuthorization();
+        builder.Services.AddOhData(o => { o.WithPrefix("/odata"); o.AddEntitySetProfile<UpsertAnonAdminCreateProfile>(); });
+        var app = builder.Build();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.UseRouting();
+        app.MapOhData();
+        await app.StartAsync();
+        await using var fx = new TestFixture(app);
+        Array.Clear(UpsertAnonAdminCreateProfile.C);
+
+        async Task<HttpStatusCode?> Send(HttpMethod m, string path, int id)
+        {
+            try { return (await fx.Client.SendAsync(Req(m, path, null, null, Body(id)))).StatusCode; }
+            catch (InvalidOperationException) { return null; }
+        }
+
+        HttpStatusCode? post = await Send(HttpMethod.Post, "/odata/UpsertAnonAdmin", 9101);
+        HttpStatusCode? put = await Send(HttpMethod.Put, "/odata/UpsertAnonAdmin(9102)", 9102);
+        Assert.NotEqual(HttpStatusCode.Created, post);
+        Assert.NotEqual(HttpStatusCode.Created, put);
+        Assert.Equal(0, UpsertAnonAdminCreateProfile.C[0]);
     }
 }

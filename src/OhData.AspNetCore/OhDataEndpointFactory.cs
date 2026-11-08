@@ -2011,12 +2011,26 @@ internal static class OhDataEndpointFactory
     /// </summary>
     private static async Task<IResult?> CheckCollectionPostGateAsync(HttpContext ctx, UpsertCreateGate gate)
     {
-        // Authorization middleware did not run for this request, so the collection POST is ungated too.
-        if (!ctx.Items.ContainsKey("__AuthorizationMiddlewareWithEndpointInvoked")) return null;
-
         Endpoint endpoint = gate.Endpoint ??= ctx.RequestServices.GetRequiredService<EndpointDataSource>()
             .Endpoints.FirstOrDefault(e => e.Metadata.Any(m => ReferenceEquals(m, gate)))
             ?? throw new InvalidOperationException("The collection POST endpoint for the upsert create branch was not found.");
+
+        if (!ctx.Items.ContainsKey("__AuthorizationMiddlewareWithEndpointInvoked"))
+        {
+            // Like EndpointMiddleware: authorization metadata with no authorization middleware fails closed
+            // unless the host suppressed that check; with no such metadata the POST is ungated too.
+            bool hasAuthMetadata = endpoint.Metadata.GetMetadata<IAuthorizeData>() is not null
+                || endpoint.Metadata.GetMetadata<AuthorizationPolicy>() is not null;
+            if (hasAuthMetadata
+                && !ctx.RequestServices.GetRequiredService<IOptions<RouteOptions>>().Value.SuppressCheckForUnhandledSecurityMetadata)
+            {
+                throw new InvalidOperationException(
+                    $"Endpoint {endpoint.DisplayName} contains authorization metadata, but a middleware was not found " +
+                    "that supports authorization. Configure your application startup by adding app.UseAuthorization() " +
+                    "inside the call to Configure(..) in the application startup code, between app.UseRouting() and app.UseEndpoints(...).");
+            }
+            return null;
+        }
 
         if (endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null) return null;
 
