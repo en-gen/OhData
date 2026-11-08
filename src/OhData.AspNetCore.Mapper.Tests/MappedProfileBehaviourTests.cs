@@ -212,10 +212,11 @@ public sealed class MappedProfileBehaviourTests
             db.SaveChanges();
         });
 
-    private static async Task<(HttpStatusCode Status, string Body)> GetTextAsync(MappedTestHost host, string url)
+    private static async Task<string> GetCountAsync(MappedTestHost host, string url)
     {
-        HttpResponseMessage response = await host.Client.GetAsync(url);
-        return (response.StatusCode, await response.Content.ReadAsStringAsync());
+        using HttpResponseMessage response = await host.Client.GetAsync(url);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync();
     }
 
     [Theory]
@@ -225,9 +226,8 @@ public sealed class MappedProfileBehaviourTests
     {
         await using MappedTestHost host = await StartWithManyRowsAsync();
 
-        (HttpStatusCode status, string body) = await GetTextAsync(host, $"/odata/{set}/$count");
+        string body = await GetCountAsync(host, $"/odata/{set}/$count");
 
-        Assert.Equal(HttpStatusCode.OK, status);
         Assert.Equal("1503", body);
     }
 
@@ -238,7 +238,7 @@ public sealed class MappedProfileBehaviourTests
     {
         await using MappedTestHost host = await StartWithManyRowsAsync();
 
-        (_, string body) = await GetTextAsync(host, $"/odata/{set}/$count?$filter=Rank ge 100");
+        string body = await GetCountAsync(host, $"/odata/{set}/$count?$filter=Rank ge 100");
 
         // 1400 of the 1500 added rows (Rank 100..1499); the three seeded rows rank 1..3.
         Assert.Equal("1400", body);
@@ -249,9 +249,9 @@ public sealed class MappedProfileBehaviourTests
     {
         await using MappedTestHost host = await StartWithManyRowsAsync();
 
-        (_, string mapped) = await GetTextAsync(host, $"/odata/{MappedTestHost.Mapped}/$count?$top=5&$skip=3");
+        string body = await GetCountAsync(host, $"/odata/{MappedTestHost.Mapped}/$count?$top=5&$skip=3");
 
-        Assert.Equal("1503", mapped);
+        Assert.Equal("1503", body);
     }
 
     [Fact]
@@ -259,7 +259,7 @@ public sealed class MappedProfileBehaviourTests
     {
         await using MappedTestHost host = await MappedTestHost.StartAsync();
 
-        (_, string body) = await GetTextAsync(host, $"/odata/{MappedTestHost.Paged}/$count");
+        string body = await GetCountAsync(host, $"/odata/{MappedTestHost.Paged}/$count");
 
         Assert.Equal("3", body);
     }
