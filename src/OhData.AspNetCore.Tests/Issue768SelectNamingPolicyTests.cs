@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -107,6 +108,40 @@ public sealed class Sn768PushPersonProfile : EntitySetProfile<int, Sn768PushPers
         GetQueryable = () => db.People.AsQueryable();
         HasMany(x => x.MobilePhones);
         HasMany(x => x.ChildPeople);
+    }
+}
+
+public sealed class Sn768Owner
+{
+    public int Id { get; set; }
+    public string FullName { get; set; } = "";
+    public string HomeTown { get; set; } = "";
+}
+
+public sealed class Sn768Car
+{
+    public int Id { get; set; }
+    public string ModelName { get; set; } = "";
+    public int? OwnerPersonId { get; set; }
+    public Sn768Owner? OwnerPerson { get; set; }
+}
+
+public sealed class Sn768CarDb : DbContext
+{
+    public Sn768CarDb(DbContextOptions<Sn768CarDb> o) : base(o) { }
+    public DbSet<Sn768Car> Cars => Set<Sn768Car>();
+    public DbSet<Sn768Owner> Owners => Set<Sn768Owner>();
+}
+
+public sealed class Sn768CarProfile : EntitySetProfile<int, Sn768Car>
+{
+    public Sn768CarProfile(Sn768CarDb db) : base(x => x.Id)
+    {
+        EntitySetName = "Sn768Cars";
+        SelectEnabled = true;
+        ExpandEnabled = true;
+        GetQueryable = () => db.Cars.AsQueryable();
+        HasOptional<Sn768Owner>(x => x.OwnerPerson!);
     }
 }
 
@@ -279,5 +314,71 @@ public class Issue768SelectNamingPolicyTests
         string body = await Ok(fx, "/odata/Sn768PushPeople?$expand=ChildPeople($levels=2;$select=FirstName)");
         string child = $"\"{childKey}\":[{{\"{Keys(policy).First}\":\"Kid\",\"{childKey}\":[]}}]";
         Assert.True(body.Contains(child), body);
+    }
+
+    [Fact]
+    public async Task PushdownSingleValuedNav_NestedSelect_KeepsPolicyKey()
+    {
+        using var conn = new SqliteConnection("DataSource=:memory:");
+        conn.Open();
+        await using var fx = await TestHostBuilder.BuildAsync(
+            b =>
+            {
+                b.WithJsonPropertyNamingPolicy(JsonNamingPolicy.SnakeCaseLower);
+                b.AddEntitySetProfile<Sn768CarProfile>();
+            },
+            configureServices: s => s.AddDbContext<Sn768CarDb>(o => o.UseSqlite(conn)));
+        using (IServiceScope scope = fx.App.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Sn768CarDb>();
+            db.Database.EnsureCreated();
+            db.Owners.Add(new Sn768Owner { Id = 5, FullName = "Ada L", HomeTown = "London" });
+            db.Cars.Add(new Sn768Car { Id = 1, ModelName = "T", OwnerPersonId = 5 });
+            db.SaveChanges();
+        }
+
+        string body = await Ok(fx, "/odata/Sn768Cars?$select=ModelName&$expand=OwnerPerson($select=FullName)");
+        Assert.Contains("\"model_name\":\"T\"", body);
+        Assert.Contains("\"owner_person\":{\"full_name\":\"Ada L\"}", body);
+        Assert.DoesNotContain("London", body);
+    }
+
+    // A host TypeInfoResolver modifier that renames properties: the strip must follow the real
+    // contract, not re-derive names from the policy.
+    private static Task<TestFixture> BuildWithRenamingModifier(Func<string, string> rename) => TestHostBuilder.BuildAsync(
+        o => o.AddEntitySetProfile<Sn768PersonProfile>(),
+        configureServices: s => s.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(j =>
+            j.SerializerOptions.TypeInfoResolver = new DefaultJsonTypeInfoResolver
+            {
+                Modifiers =
+                {
+                    ti =>
+                    {
+                        foreach (JsonPropertyInfo p in ti.Properties) p.Name = rename(p.Name);
+                    },
+                },
+            }));
+
+    [Theory]
+    [InlineData("lower")]
+    [InlineData("snake")]
+    public async Task HostModifierRename_SelectKeepsRenamedKeys_OnEveryRoute(string mode)
+    {
+        Func<string, string> rename = mode == "lower"
+            ? n => n.ToLowerInvariant()
+            : n => JsonNamingPolicy.SnakeCaseLower.ConvertName(n);
+        string first = rename("FirstName");
+        string number = rename("PhoneNumber");
+        await using var fx = await BuildWithRenamingModifier(rename);
+
+        Assert.Contains($"\"{first}\":\"Ada\"", await Ok(fx, "/odata/Sn768People?$select=FirstName"));
+        Assert.Contains($"\"{first}\":\"Ada\"", await Ok(fx, "/odata/Sn768People(1)?$select=FirstName"));
+        Assert.Contains($"\"{number}\":\"555\"", await Ok(fx, "/odata/Sn768People(1)/MobilePhones?$select=PhoneNumber"));
+        Assert.Contains($"\"{number}\":\"555\"", await Ok(fx, "/odata/Sn768People?$expand=MobilePhones($select=PhoneNumber)"));
+
+        // The expanded navigation must survive a selected + expanded request.
+        string both = await Ok(fx, "/odata/Sn768People?$select=FirstName&$expand=MobilePhones");
+        Assert.Contains($"\"{first}\":\"Ada\"", both);
+        Assert.Contains($"\"{number}\":\"555\"", both);
     }
 }

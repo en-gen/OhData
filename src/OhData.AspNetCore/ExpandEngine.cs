@@ -219,7 +219,7 @@ internal static class ExpandEngine
             {
                 StripToSelectedProperties(
                     json.OfType<JsonObject>(),
-                    ResolveSelectedJsonKeys(selectedProps, RuntimeTypesOf(originalItems, source.ModelType), serializerOptions));
+                    ResolveSelectedJsonKeys(selectedProps, new[] { source.ModelType }, serializerOptions));
             }
         }
 
@@ -2081,26 +2081,39 @@ internal static class ExpandEngine
         return json;
     }
 
-    // $select names are EDM identifiers; payload keys are what the serializer wrote. Maps each name to
-    // its key via ResolveNavigationJsonKey, per runtime type. A name no type declares (dynamic
-    // property) is kept under both its literal and policy-converted spelling.
+    // The serializer contract's JSON name per CLR member name, so host modifiers, [JsonPropertyName]
+    // and the naming policy are all honoured. Cached per (options, type).
+    private static readonly ConditionalWeakTable<JsonSerializerOptions, ConcurrentDictionary<Type, Dictionary<string, string>>>
+        s_contractNames = new();
+
+    private static Dictionary<string, string> ContractNames(Type type, JsonSerializerOptions options) =>
+        s_contractNames.GetOrCreateValue(options).GetOrAdd(type, static (t, opts) =>
+        {
+            var names = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (!opts.TryGetTypeInfo(t, out JsonTypeInfo? info)) return names;
+            foreach (JsonPropertyInfo p in info.Properties)
+            {
+                if (p.AttributeProvider is PropertyInfo pi) names.TryAdd(pi.Name, p.Name);
+            }
+            return names;
+        }, options);
+
+    // $select names are EDM identifiers; payload keys are what the serializer wrote. Maps each name
+    // to the contract key, plus the key ResolveNavigationJsonKey gives it, because that is the key
+    // the $expand injection writes for a navigation.
     internal static HashSet<string> ResolveSelectedJsonKeys(
         IReadOnlyList<string> edmNames, IEnumerable<Type> clrTypes, JsonSerializerOptions? serializerOptions)
     {
+        JsonSerializerOptions options = serializerOptions ?? OhDataEndpointFactory._pascalCaseSerializerOptions;
         var keys = new HashSet<string>(StringComparer.Ordinal);
         foreach (string edmName in edmNames)
         {
-            bool resolved = false;
             foreach (Type t in clrTypes)
             {
                 if (!ODataPropertyNaming.TryResolveEdmName(t, edmName, out PropertyInfo? prop) || prop is null) continue;
-                keys.Add(ResolveNavigationJsonKey(prop.Name, prop, serializerOptions));
-                resolved = true;
+                keys.Add(ResolveNavigationJsonKey(prop.Name, prop, options));
+                if (ContractNames(t, options).TryGetValue(prop.Name, out string? contractKey)) keys.Add(contractKey);
             }
-
-            if (resolved) continue;
-            keys.Add(edmName);
-            keys.Add(ResolveNavigationJsonKey(edmName, null, serializerOptions));
         }
         return keys;
     }
@@ -3520,6 +3533,10 @@ internal static class ExpandEngine
                 continue;
             }
 
+            HashSet<string>? nestedKeys = e.NestedSelect is null
+                ? null
+                : ResolveSelectedJsonKeys(e.NestedSelect, new[] { e.Binding.ElementType }, serializerOptions);
+
             PropertyInfo prop = e.Binding.Property;
             string key = ResolveNavigationJsonKey(prop.Name, prop, serializerOptions);
 
@@ -3631,23 +3648,13 @@ internal static class ExpandEngine
                     // the children survive, and shaping deeper counts/selects sees the full child graph.
                     if (hasChildren)
                         ShapePushedExpandsInJson(arr.OfType<JsonObject>(), e.Children!, serializerOptions, maxExpandTop);
-                    if (e.NestedSelect is not null)
-                    {
-                        StripToSelectedProperties(
-                            arr.OfType<JsonObject>(),
-                            ResolveSelectedJsonKeys(e.NestedSelect, new[] { e.Binding.ElementType }, serializerOptions));
-                    }
+                    if (nestedKeys is not null) StripToSelectedProperties(arr.OfType<JsonObject>(), nestedKeys);
                 }
                 else if (!e.Binding.IsCollection && node is JsonObject one)
                 {
                     if (hasChildren)
                         ShapePushedExpandsInJson(new[] { one }, e.Children!, serializerOptions, maxExpandTop);
-                    if (e.NestedSelect is not null)
-                    {
-                        StripToSelectedProperties(
-                            new[] { one },
-                            ResolveSelectedJsonKeys(e.NestedSelect, new[] { e.Binding.ElementType }, serializerOptions));
-                    }
+                    if (nestedKeys is not null) StripToSelectedProperties(new[] { one }, nestedKeys);
                 }
             }
         }

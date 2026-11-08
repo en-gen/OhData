@@ -2855,7 +2855,9 @@ internal static class OhDataEndpointFactory
             }
 
             HashSet<string> selectedKeys = ExpandEngine.ResolveSelectedJsonKeys(
-                selectedProps, ExpandEngine.RuntimeTypesOf(itemArray, navItemType), navSerializerOptions);
+                selectedProps,
+                navItemType is not null ? new[] { navItemType } : ExpandEngine.RuntimeTypesOf(itemArray, null),
+                navSerializerOptions);
             foreach (JsonObject obj in json.OfType<JsonObject>())
             {
                 var toRemove = obj.Select(p => p.Key)
