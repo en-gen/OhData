@@ -790,6 +790,10 @@ status codes or headers.
 
 ### Fixed
 
+- **A `MappedEntitySetProfile` `GET /Set/$count` returned `MappedPageSize` instead of the total (#759).**
+  The route counted the handler's windowed page. The mapped handler now recognises the count route
+  and returns the whole filtered set, so the count is one provider `COUNT` that ignores `$top`/`$skip`.
+
 - **`OhData.Client`'s `GetPropertyAsync` ignored `@odata.type` on a polymorphic property (#720).**
   The `value` envelope was deserialized with the plain `JsonOptions` instead of the polymorphism-aware
   read options every other read uses (#707), so a property declared as a polymorphic base (complex or
