@@ -199,6 +199,83 @@ public sealed class MappedProfileBehaviourTests
         Assert.Equal(3, page["@odata.count"]!.GetValue<long>());
     }
 
+    // ── /$count is the whole set, never a page (#759) ─────────────────────────────────────────
+
+    private static Task<MappedTestHost> StartWithManyRowsAsync() =>
+        MappedTestHost.StartAsync(db =>
+        {
+            for (int i = 0; i < 1500; i++)
+            {
+                db.Products.Add(new Product { Id = 5000 + i, Name = "N" + i, First = "f", Last = "l", Rank = i });
+            }
+
+            db.SaveChanges();
+        });
+
+    private static async Task<(HttpStatusCode Status, string Body)> GetTextAsync(MappedTestHost host, string url)
+    {
+        HttpResponseMessage response = await host.Client.GetAsync(url);
+        return (response.StatusCode, await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData(MappedTestHost.Mapped)]
+    [InlineData(MappedTestHost.Control)]
+    public async Task TheCountRoute_OverMoreRowsThanThePage_IsTheTotal(string set)
+    {
+        await using MappedTestHost host = await StartWithManyRowsAsync();
+
+        (HttpStatusCode status, string body) = await GetTextAsync(host, $"/odata/{set}/$count");
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        Assert.Equal("1503", body);
+    }
+
+    [Theory]
+    [InlineData(MappedTestHost.Mapped)]
+    [InlineData(MappedTestHost.Control)]
+    public async Task TheCountRoute_WithAFilter_IsTheFilteredTotal(string set)
+    {
+        await using MappedTestHost host = await StartWithManyRowsAsync();
+
+        (_, string body) = await GetTextAsync(host, $"/odata/{set}/$count?$filter=Rank ge 100");
+
+        // 1400 of the 1500 added rows (Rank 100..1499); the three seeded rows rank 1..3.
+        Assert.Equal("1400", body);
+    }
+
+    [Fact]
+    public async Task TheCountRoute_IgnoresTopAndSkip()
+    {
+        await using MappedTestHost host = await StartWithManyRowsAsync();
+
+        (_, string mapped) = await GetTextAsync(host, $"/odata/{MappedTestHost.Mapped}/$count?$top=5&$skip=3");
+
+        Assert.Equal("1503", mapped);
+    }
+
+    [Fact]
+    public async Task TheCountRoute_OnATwoRowPage_IsTheTotal()
+    {
+        await using MappedTestHost host = await MappedTestHost.StartAsync();
+
+        (_, string body) = await GetTextAsync(host, $"/odata/{MappedTestHost.Paged}/$count");
+
+        Assert.Equal("3", body);
+    }
+
+    [Fact]
+    public async Task TheInlineCount_OverMoreRowsThanThePage_IsTheTotalWithANextLink()
+    {
+        await using MappedTestHost host = await StartWithManyRowsAsync();
+
+        JsonObject page = await host.GetJsonAsync($"/odata/{MappedTestHost.Mapped}?$count=true");
+
+        Assert.Equal(1000, page["value"]!.AsArray().Count);
+        Assert.Equal(1503, page["@odata.count"]!.GetValue<long>());
+        Assert.NotNull(page["@odata.nextLink"]);
+    }
+
     // ── Invariants a profile author can trip ──────────────────────────────────────────────────
 
     [Fact]

@@ -154,6 +154,16 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
         IQueryable<TEntity> query = _entityQuery!();
         query = composer.ApplyFilter(query, options.Filter?.FilterClause);
 
+        // The core counts whatever this handler returns, so the count route gets the whole filtered
+        // set: no window, no nextLink, and $top/$skip ignored (§11.2.9).
+        if (IsCountRoute(options))
+        {
+            return Task.FromResult(new ODataQueryResult<TModel>
+            {
+                Items = query.Select((Expression<Func<TEntity, TModel>>)_projection!),
+            });
+        }
+
         bool ordered = options.OrderBy?.OrderByClause is not null;
         query = composer.ApplyOrderBy(query, options.OrderBy?.OrderByClause);
 
@@ -192,6 +202,10 @@ public abstract class MappedEntitySetProfile<TKey, TModel, TEntity> : ODataEntit
             NextLink = nextLink,
         });
     }
+
+    // The core does not tell a Priority-1 handler it is serving /$count (#748), so read the path.
+    private static bool IsCountRoute(ODataQueryOptions<TModel> options) =>
+        options.Request.Path.Value?.EndsWith("/$count", StringComparison.Ordinal) == true;
 
     private int ResolvePageSize(int? requestedTop, ODataQueryOptions<TModel> options)
     {

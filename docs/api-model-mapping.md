@@ -224,6 +224,9 @@ with `$skip`-bearing continuations, which it provably re-reads.
 6. `$expand` runs one batched query per navigation, keyed by the page's parent keys.
 7. `$select`, ETags and the envelope come from the core's shared collection pipeline, unchanged.
 
+`GET /Set/$count` skips steps 3-6: it counts the whole filtered set in one provider `COUNT`,
+unaffected by `$top`, `$skip` and `MappedPageSize`.
+
 Nothing is filtered, sorted or paged in memory.
 
 ## Paging
