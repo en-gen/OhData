@@ -790,6 +790,13 @@ status codes or headers.
 
 ### Fixed
 
+- **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
+  The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
+  they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`
+  with empty objects. The strip now resolves each selected name to the key the serializer wrote for that CLR
+  member (`[JsonPropertyName]` and the policy both honoured, per runtime type) and compares key to key, on the
+  collection, by-key, navigation-collection, nested-`$select` and pushed `$expand`/`$levels` paths.
+
 - **`OhData.Client`'s `GetPropertyAsync` ignored `@odata.type` on a polymorphic property (#720).**
   The `value` envelope was deserialized with the plain `JsonOptions` instead of the polymorphism-aware
   read options every other read uses (#707), so a property declared as a polymorphic base (complex or

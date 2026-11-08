@@ -217,7 +217,9 @@ internal static class ExpandEngine
             selectedProps = ExtractSelectedProperties(options.SelectExpand.SelectExpandClause);
             if (selectedProps is not null)
             {
-                StripToSelectedProperties(json.OfType<JsonObject>(), selectedProps);
+                StripToSelectedProperties(
+                    json.OfType<JsonObject>(),
+                    ResolveSelectedJsonKeys(selectedProps, RuntimeTypesOf(originalItems, source.ModelType), serializerOptions));
             }
         }
 
@@ -236,7 +238,7 @@ internal static class ExpandEngine
     // expand's count/annotations. We therefore keep a key when: '@' is at index 0 (top-level
     // annotation such as @odata.etag / @odata.id — existing behavior); or '@' appears later and
     // the base name is a selected/expanded property; or the whole key is itself selected.
-    private static void StripToSelectedProperties(IEnumerable<JsonObject> objects, List<string> selectedProps)
+    private static void StripToSelectedProperties(IEnumerable<JsonObject> objects, HashSet<string> selectedProps)
     {
         foreach (JsonObject obj in objects)
         {
@@ -249,17 +251,17 @@ internal static class ExpandEngine
 
     // Decides whether a single JSON key survives a $select strip. See StripToSelectedProperties
     // for the §11.2.4.2 rationale behind the inline-control-information (name@odata.xxx) case.
-    private static bool KeepUnderSelect(string key, List<string> selectedProps)
+    private static bool KeepUnderSelect(string key, HashSet<string> selectedProps)
     {
         int at = key.IndexOf('@');
         if (at == 0) return true;                       // top-level annotation (@odata.etag, @odata.id, ...)
         if (at > 0 &&                                    // inline control info: keep iff its property is selected
-            selectedProps.Contains(key.Substring(0, at), StringComparer.OrdinalIgnoreCase))
+            selectedProps.Contains(key.Substring(0, at)))
         {
             return true;
         }
 
-        return selectedProps.Contains(key, StringComparer.OrdinalIgnoreCase);
+        return selectedProps.Contains(key);
     }
 
     // Deepest nesting level ExpandLevelAsync will follow, AND the model-bound `entityType.Expand(N)`
@@ -705,7 +707,12 @@ internal static class ExpandEngine
             if (hasNestedSelect)
             {
                 List<string>? nestedSelected = ExtractSelectedProperties((SelectExpandClause)nestedClause);
-                if (nestedSelected is not null) StripToSelectedProperties(childObjects, nestedSelected);
+                if (nestedSelected is not null)
+                {
+                    StripToSelectedProperties(
+                        childObjects,
+                        ResolveSelectedJsonKeys(nestedSelected, RuntimeTypesOf(childItems, null), serializerOptions));
+                }
             }
         }
     }
@@ -2072,6 +2079,45 @@ internal static class ExpandEngine
             }
         }
         return json;
+    }
+
+    // #768: $select names are EDM identifiers; payload keys are what the serializer wrote. Maps each
+    // selected name to that key through the one derivation navigation omission uses
+    // (ResolveNavigationJsonKey), per runtime type, so the strip compares key to key. A name no
+    // type declares (dynamic/open property) is kept under both its literal and policy-converted spelling.
+    internal static HashSet<string> ResolveSelectedJsonKeys(
+        IReadOnlyList<string> edmNames, IEnumerable<Type> clrTypes, JsonSerializerOptions? serializerOptions)
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string edmName in edmNames)
+        {
+            bool resolved = false;
+            foreach (Type t in clrTypes)
+            {
+                if (!ODataPropertyNaming.TryResolveEdmName(t, edmName, out PropertyInfo? prop) || prop is null) continue;
+                keys.Add(ResolveNavigationJsonKey(prop.Name, prop, serializerOptions));
+                resolved = true;
+            }
+
+            if (resolved) continue;
+            keys.Add(edmName);
+            keys.Add(ResolveNavigationJsonKey(edmName, null, serializerOptions));
+        }
+        return keys;
+    }
+
+    // The distinct runtime types of <paramref name="items"/> plus an optional declared type, so a
+    // derived row's own properties resolve as well as the declared type's.
+    internal static List<Type> RuntimeTypesOf(IEnumerable items, Type? declared)
+    {
+        var types = new List<Type>();
+        if (declared is not null) types.Add(declared);
+        foreach (object? item in items)
+        {
+            Type? t = item?.GetType();
+            if (t is not null && !types.Contains(t)) types.Add(t);
+        }
+        return types;
     }
 
     // M3: returns the client's $select (+ $expand) property list, in request order and
@@ -3587,14 +3633,22 @@ internal static class ExpandEngine
                     if (hasChildren)
                         ShapePushedExpandsInJson(arr.OfType<JsonObject>(), e.Children!, serializerOptions, maxExpandTop);
                     if (e.NestedSelect is not null)
-                        StripToSelectedProperties(arr.OfType<JsonObject>(), e.NestedSelect);
+                    {
+                        StripToSelectedProperties(
+                            arr.OfType<JsonObject>(),
+                            ResolveSelectedJsonKeys(e.NestedSelect, new[] { e.Binding.ElementType }, serializerOptions));
+                    }
                 }
                 else if (!e.Binding.IsCollection && node is JsonObject one)
                 {
                     if (hasChildren)
                         ShapePushedExpandsInJson(new[] { one }, e.Children!, serializerOptions, maxExpandTop);
                     if (e.NestedSelect is not null)
-                        StripToSelectedProperties(new[] { one }, e.NestedSelect);
+                    {
+                        StripToSelectedProperties(
+                            new[] { one },
+                            ResolveSelectedJsonKeys(e.NestedSelect, new[] { e.Binding.ElementType }, serializerOptions));
+                    }
                 }
             }
         }
@@ -3977,7 +4031,11 @@ internal static class ExpandEngine
         if (next.Count == 0) return;
 
         ShapeLevelsInJson(next, e, remaining - 1, serializerOptions, maxExpandTop);
-        if (e.NestedSelect is not null) StripToSelectedProperties(next, e.NestedSelect);
+        if (e.NestedSelect is not null)
+        {
+            StripToSelectedProperties(
+                next, ResolveSelectedJsonKeys(e.NestedSelect, new[] { e.Binding.ElementType }, serializerOptions));
+        }
     }
 
     // #206 phase 2 (Option A1): builds the startup-time $expand pushdown binding for one
