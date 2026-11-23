@@ -90,6 +90,11 @@ status codes or headers.
       either: declare the operation with `BindEntityFunction`/`BindEntityAction`, or scope the rule
       with `Invoke("Name", …)` to the operations that carry a key.
 
+- [ ] **An upsert `PUT` (`AllowUpsert`) to a missing key needs the collection `POST` permissions too**
+      (#795). The create branch used to run under the Update rule alone; it now also answers `401` or
+      `403` where the `POST` would. Grant intended upsert creators the Create rule, any group-level
+      policy and the fallback policy that apply to the `POST`.
+
 #### 4. Nothing to do
 
 - **An omitted required property is accepted again** on `POST`/`PUT` (#544/#545). 1.7.0 refused it;
@@ -599,6 +604,19 @@ status codes or headers.
   (`.TopSkipSupported`, `.FilterEnabled`, …), never through either obsolete overload, so nothing in
   this repo needed to change beyond the four removals.
 
+- **⚠ BREAKING CHANGE — an upsert `PUT` authorizes its create branch like the collection `POST`
+  (#795, security).** With `AllowUpsert`, a `PUT` to a missing key ran the `Post` handler under the
+  Update rule alone, so a caller holding Update but not Create got `201 Created`, and an
+  `AllowAnonymous()` Update rule also bypassed group-level `RequireAuthorization` and the fallback
+  policy. The create branch now evaluates the collection `POST` endpoint's authorization (group,
+  fallback policy, Create rule, through the host's `IAuthorizationMiddlewareResultHandler`, with the
+  `POST` endpoint on the `HttpContext` while it runs) and the Create `.RequireResource()` check
+  against the incoming model before `Post`. A caller who relied on Update alone to create now gets
+  `401` or `403`, as the `POST` answers. **Remedy: grant every intended upsert creator the collection
+  `POST` permissions** — the Create rule and `.RequireResource()` check, plus any group-level
+  `RequireAuthorization` policy and fallback policy that apply to the `POST`. `PUT` to an existing
+  key is unchanged.
+
 
 ### Added
 
@@ -789,8 +807,6 @@ status codes or headers.
 
 
 ### Fixed
-
-- **An upsert `PUT` now authorizes its create branch like the collection `POST` (#795, security).** With `AllowUpsert`, a `PUT` to a missing key ran the `Post` handler under the Update rule alone, so a caller holding Update but not Create got `201 Created`, and an `AllowAnonymous()` Update rule also bypassed group-level `RequireAuthorization` and the fallback policy. The create branch now evaluates the collection `POST` endpoint's authorization (group, fallback policy, Create rule; `401` or `403` as the `POST` answers, through the host's `IAuthorizationMiddlewareResultHandler`) and the Create `.RequireResource()` check against the incoming model before `Post`. `PUT` to an existing key is unchanged.
 
 - **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
