@@ -89,7 +89,6 @@ status codes or headers.
       `Warning`: the coarse half still gates the route, only the narrowing is lost. Remedy for
       either: declare the operation with `BindEntityFunction`/`BindEntityAction`, or scope the rule
       with `Invoke("Name", …)` to the operations that carry a key.
-
 - [ ] **An upsert `PUT` (`AllowUpsert`) to a missing key needs the collection `POST` permissions too**
       (#795). The create branch used to run under the Update rule alone; it now also answers `401` or
       `403` where the `POST` would. Grant intended upsert creators the Create rule, any group-level

@@ -2035,30 +2035,31 @@ internal static class OhDataEndpointFactory
 
         if (endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null) return null;
 
-        var provider = ctx.RequestServices.GetRequiredService<IAuthorizationPolicyProvider>();
-        AuthorizationPolicy? policy = await AuthorizationPolicy.CombineAsync(
-            provider,
-            endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>(),
-            endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
-
-        var requirementData = endpoint.Metadata.GetOrderedMetadata<IAuthorizationRequirementData>();
-        if (requirementData.Count > 0)
-        {
-            var reqPolicy = new AuthorizationPolicyBuilder();
-            foreach (IAuthorizationRequirementData rd in requirementData)
-            {
-                reqPolicy.AddRequirements(rd.GetRequirements().ToArray());
-            }
-            policy = policy is null ? reqPolicy.Build() : AuthorizationPolicy.Combine(policy, reqPolicy.Build());
-        }
-        if (policy is null) return null;
-
-        // The middleware evaluates with the endpoint being authorized on the context; handlers read its
-        // metadata from there. Swap it for the evaluation only, so the PUT endpoint is back afterwards.
+        // The middleware resolves, authenticates and authorizes with the endpoint being authorized on the
+        // context; providers and handlers read its metadata from there. Swap it for all of that only, so
+        // the PUT endpoint is back afterwards.
         Endpoint? requestEndpoint = ctx.GetEndpoint();
         ctx.SetEndpoint(endpoint);
         try
         {
+            var provider = ctx.RequestServices.GetRequiredService<IAuthorizationPolicyProvider>();
+            AuthorizationPolicy? policy = await AuthorizationPolicy.CombineAsync(
+                provider,
+                endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>(),
+                endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
+
+            var requirementData = endpoint.Metadata.GetOrderedMetadata<IAuthorizationRequirementData>();
+            if (requirementData.Count > 0)
+            {
+                var reqPolicy = new AuthorizationPolicyBuilder();
+                foreach (IAuthorizationRequirementData rd in requirementData)
+                {
+                    reqPolicy.AddRequirements(rd.GetRequirements().ToArray());
+                }
+                policy = policy is null ? reqPolicy.Build() : AuthorizationPolicy.Combine(policy, reqPolicy.Build());
+            }
+            if (policy is null) return null;
+
             var evaluator = ctx.RequestServices.GetRequiredService<IPolicyEvaluator>();
             var authn = await evaluator.AuthenticateAsync(policy, ctx);
             object resource = AppContext.TryGetSwitch(

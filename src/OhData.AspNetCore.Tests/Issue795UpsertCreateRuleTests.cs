@@ -246,10 +246,54 @@ internal sealed class UpsertEndpointMethodRequirement : IAuthorizationRequiremen
 
 internal static class UpsertEndpointProbe
 {
-    public static readonly List<string> ResourceCheckMethods = [];
-
     public static string? Method(HttpContext http) =>
         http.GetEndpoint()?.Metadata.GetMetadata<IHttpMethodMetadata>()?.HttpMethods.FirstOrDefault();
+}
+
+// Per-host record of the endpoint method seen at a point in a request.
+internal sealed class UpsertEndpointRecorder
+{
+    public readonly List<string> AtResourceCheck = [];
+    public readonly List<string> AfterRequest = [];
+}
+
+// Reads the endpoint while the policy provider resolves a dynamic policy, as the middleware's
+// provider call does with the endpoint being authorized on the context.
+internal sealed class UpsertEndpointAwarePolicyProvider : DefaultAuthorizationPolicyProvider
+{
+    private readonly IHttpContextAccessor _accessor;
+
+    public UpsertEndpointAwarePolicyProvider(
+        Microsoft.Extensions.Options.IOptions<AuthorizationOptions> options, IHttpContextAccessor accessor) : base(options) =>
+        _accessor = accessor;
+
+    public override Task<AuthorizationPolicy?> GetPolicyAsync(string policyName)
+    {
+        if (policyName != "DynCreate") return base.GetPolicyAsync(policyName);
+        var builder = new AuthorizationPolicyBuilder();
+        if (UpsertEndpointProbe.Method(_accessor.HttpContext!) == "POST") builder.RequireAuthenticatedUser();
+        else builder.RequireRole("Nobody");
+        return Task.FromResult<AuthorizationPolicy?>(builder.Build());
+    }
+}
+
+// Authenticates only while the endpoint on the context is the collection POST.
+internal sealed class UpsertEndpointAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+{
+    public const string SchemeName = "UpsertEndpointScheme";
+
+    public UpsertEndpointAuthHandler(
+        Microsoft.Extensions.Options.IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger, System.Text.Encodings.Web.UrlEncoder encoder) : base(options, logger, encoder) { }
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        if (UpsertEndpointProbe.Method(Context) != "POST") return Task.FromResult(AuthenticateResult.NoResult());
+        var id = new System.Security.Claims.ClaimsIdentity(
+            [new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, "Admin")], SchemeName);
+        return Task.FromResult(AuthenticateResult.Success(
+            new AuthenticationTicket(new System.Security.Claims.ClaimsPrincipal(id), SchemeName)));
+    }
 }
 
 internal sealed class UpsertEndpointMethodHandler : AuthorizationHandler<UpsertEndpointMethodRequirement>
@@ -265,13 +309,18 @@ internal sealed class UpsertEndpointMethodHandler : AuthorizationHandler<UpsertE
 internal sealed class UpsertEndpointRecordingResourceHandler : AuthorizationHandler<OperationAuthorizationRequirement, UpsertItem>
 {
     private readonly IHttpContextAccessor _accessor;
-    public UpsertEndpointRecordingResourceHandler(IHttpContextAccessor accessor) => _accessor = accessor;
+    private readonly UpsertEndpointRecorder _recorder;
+
+    public UpsertEndpointRecordingResourceHandler(IHttpContextAccessor accessor, UpsertEndpointRecorder recorder)
+    {
+        _accessor = accessor;
+        _recorder = recorder;
+    }
 
     protected override Task HandleRequirementAsync(
         AuthorizationHandlerContext ctx, OperationAuthorizationRequirement req, UpsertItem item)
     {
-        lock (UpsertEndpointProbe.ResourceCheckMethods)
-            UpsertEndpointProbe.ResourceCheckMethods.Add(UpsertEndpointProbe.Method(_accessor.HttpContext!) ?? "none");
+        _recorder.AtResourceCheck.Add(UpsertEndpointProbe.Method(_accessor.HttpContext!) ?? "none");
         ctx.Succeed(req);
         return Task.CompletedTask;
     }
@@ -315,8 +364,35 @@ internal sealed class UpsertEndpointResourceProfile : UpsertProfileBase
     public UpsertEndpointResourceProfile()
     {
         EntitySetName = "UpsertEndpointRes";
+        // A coarse requirement is needed too: with RequireResource() alone the gate has no policy and never swaps.
         ConfigureAuthorization(a => a
-            .Create(c => c.RequireResource())
+            .Create(c => c.RequireAuthenticatedUser().RequireResource())
+            .Update(u => u.RequireAuthenticatedUser()));
+    }
+}
+
+internal sealed class UpsertDynPolicyProfile : UpsertProfileBase
+{
+    public static readonly int[] C = new int[2];
+    protected override int[] Counters => C;
+    public UpsertDynPolicyProfile()
+    {
+        EntitySetName = "UpsertDynPolicy";
+        ConfigureAuthorization(a => a
+            .Create(c => c.RequirePolicy("DynCreate"))
+            .Update(u => u.RequireAuthenticatedUser()));
+    }
+}
+
+internal sealed class UpsertSchemePolicyProfile : UpsertProfileBase
+{
+    public static readonly int[] C = new int[2];
+    protected override int[] Counters => C;
+    public UpsertSchemePolicyProfile()
+    {
+        EntitySetName = "UpsertSchemePolicy";
+        ConfigureAuthorization(a => a
+            .Create(c => c.RequirePolicy("EndpointScheme"))
             .Update(u => u.RequireAuthenticatedUser()));
     }
 }
@@ -545,21 +621,118 @@ public class Issue795UpsertCreateRuleTests
     [Fact]
     public async Task EndpointIsRestoredToThePut_AfterTheGate()
     {
-        await using var fx = await PerOpAuthTestHost.BuildAsync(o =>
+        var recorder = new UpsertEndpointRecorder();
+        await using var fx = await BuildRecordingHostAsync(o =>
         {
             o.AddEntitySetProfile<UpsertEndpointResourceProfile>();
-            o.Services.AddHttpContextAccessor();
             o.Services.AddSingleton<IAuthorizationHandler, UpsertEndpointRecordingResourceHandler>();
-        });
+        }, recorder);
         Array.Clear(UpsertEndpointResourceProfile.C);
-        lock (UpsertEndpointProbe.ResourceCheckMethods) UpsertEndpointProbe.ResourceCheckMethods.Clear();
 
         var put = await fx.Client.SendAsync(Req(HttpMethod.Put, "/odata/UpsertEndpointRes(93001)", "bob", null, Body(93001)));
 
         Assert.Equal(HttpStatusCode.Created, put.StatusCode);
         Assert.Equal(1, UpsertEndpointResourceProfile.C[0]);
-        lock (UpsertEndpointProbe.ResourceCheckMethods)
-            Assert.Equal(["PUT"], UpsertEndpointProbe.ResourceCheckMethods);
+        Assert.Equal(["PUT"], recorder.AtResourceCheck);
+        Assert.Equal(["PUT"], recorder.AfterRequest);
+    }
+
+    // The gate throws mid-evaluation (the POST swap is in place); the request must leave on the PUT endpoint.
+    [Fact]
+    public async Task EndpointIsRestoredToThePut_WhenTheGateThrows()
+    {
+        var recorder = new UpsertEndpointRecorder();
+        await using var fx = await BuildRecordingHostAsync(
+            o =>
+            {
+                o.AddEntitySetProfile<UpsertJsonFaultProfile>();
+                o.Services.AddSingleton<IAuthorizationHandler, UpsertJsonFaultHandler>();
+            },
+            recorder,
+            policies: p => p.AddPolicy("JsonFault", b => b.AddRequirements(new UpsertJsonFaultRequirement())));
+        Array.Clear(UpsertJsonFaultProfile.C);
+
+        var put = await fx.Client.SendAsync(Req(HttpMethod.Put, "/odata/UpsertJsonFault(93002)", "bob", null, Body(93002)));
+
+        Assert.Equal(HttpStatusCode.InternalServerError, put.StatusCode);
+        Assert.Equal(0, UpsertJsonFaultProfile.C[0]);
+        Assert.Equal(["PUT"], recorder.AfterRequest);
+    }
+
+    // A denial short-circuits through the result handler; the PUT endpoint must still come back.
+    [Fact]
+    public async Task EndpointIsRestoredToThePut_WhenTheGateDenies()
+    {
+        var recorder = new UpsertEndpointRecorder();
+        await using var fx = await BuildRecordingHostAsync(o => o.AddEntitySetProfile<UpsertCreateRoleProfile>(), recorder);
+        Array.Clear(UpsertCreateRoleProfile.C);
+
+        var put = await fx.Client.SendAsync(Req(HttpMethod.Put, "/odata/UpsertRole(93003)", "bob", null, Body(93003)));
+
+        Assert.Equal(HttpStatusCode.Forbidden, put.StatusCode);
+        Assert.Equal(["PUT"], recorder.AfterRequest);
+    }
+
+    // The middleware resolves the policy with the endpoint being authorized on the context, so a
+    // provider that reads it (a dynamic policy) must see the collection POST's.
+    [Fact]
+    public async Task DynamicPolicyProviderReadsEndpoint_CreateSeesThePostEndpoint()
+    {
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o =>
+        {
+            o.AddEntitySetProfile<UpsertDynPolicyProfile>();
+            o.Services.AddHttpContextAccessor();
+            o.Services.AddSingleton<IAuthorizationPolicyProvider, UpsertEndpointAwarePolicyProvider>();
+        });
+        await AssertSameVerdictAsync(fx, "UpsertDynPolicy", UpsertDynPolicyProfile.C, HttpStatusCode.Created, "bob", null);
+    }
+
+    // The Create policy names its own scheme; authentication runs with the POST endpoint on the context.
+    [Fact]
+    public async Task AuthenticationHandlerReadsEndpoint_CreateAuthenticatesAsThePost()
+    {
+        await using var fx = await PerOpAuthTestHost.BuildAsync(
+            o =>
+            {
+                o.AddEntitySetProfile<UpsertSchemePolicyProfile>();
+                o.Services.AddAuthentication()
+                    .AddScheme<AuthenticationSchemeOptions, UpsertEndpointAuthHandler>(UpsertEndpointAuthHandler.SchemeName, _ => { });
+            },
+            policies: p => p.AddPolicy("EndpointScheme", b => b
+                .AddAuthenticationSchemes(UpsertEndpointAuthHandler.SchemeName).RequireRole("Admin")));
+        await AssertSameVerdictAsync(fx, "UpsertSchemePolicy", UpsertSchemePolicyProfile.C, HttpStatusCode.Created, "bob", null);
+    }
+
+    // PerOpAuthTestHost plus a middleware that records the endpoint the request leaves with.
+    private static async Task<TestFixture> BuildRecordingHostAsync(
+        Action<OhDataBuilder> configure, UpsertEndpointRecorder recorder, Action<AuthorizationOptions>? policies = null)
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddLogging();
+        builder.Services.AddHttpContextAccessor();
+        builder.Services.AddSingleton(recorder);
+        builder.Services
+            .AddAuthentication(PerOpAuthHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, PerOpAuthHandler>(PerOpAuthHandler.SchemeName, _ => { });
+        if (policies is not null) builder.Services.AddAuthorization(policies);
+        else builder.Services.AddAuthorization();
+        builder.Services.AddOhData(o =>
+        {
+            o.WithPrefix("/odata");
+            configure(o);
+        });
+        var app = builder.Build();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.Use(async (ctx, next) =>
+        {
+            await next();
+            recorder.AfterRequest.Add(UpsertEndpointProbe.Method(ctx) ?? "none");
+        });
+        app.MapOhData();
+        await app.StartAsync();
+        return new TestFixture(app);
     }
 
     // A JsonException from a policy handler is a server fault on the POST (the middleware does not
