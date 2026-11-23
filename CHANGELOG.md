@@ -1414,10 +1414,12 @@ status codes or headers.
 - **`EnGen.OhData.AspNetCore.OpenApi` no longer references `Microsoft.OpenApi` directly (#TBD).**
   `dotnet restore` failed with NU1605 because the direct `[2.12.2, 3.0.0)` reference sat below the
   `>= 2.13.0` that `Microsoft.AspNetCore.OpenApi` 10.0.15 requires. The package now takes
-  `Microsoft.OpenApi` only through `Microsoft.AspNetCore.OpenApi`, whose nuspec floor of `10.0.15`
-  brings `Microsoft.OpenApi [2.13.0, 3.0.0)`: consumers still resolve above GHSA-v5pm-xwqc-g5wc
-  (patched in 2.7.5), and the floor now follows `Microsoft.AspNetCore.OpenApi` instead of being
-  pinned here.
+  `Microsoft.OpenApi` only through `Microsoft.AspNetCore.OpenApi`. This package's nuspec writes
+  that dependency as `[10.0.x, 11.0.0)`, with `10.0.x` the patch restore resolves at pack time
+  (`10.0.15` today). Every `Microsoft.AspNetCore.OpenApi` 10.0.x from 10.0.11 requires
+  `Microsoft.OpenApi` 2.7.5 or later, so consumers stay above GHSA-v5pm-xwqc-g5wc (patched in
+  2.7.5), and the `Microsoft.OpenApi` floor now follows `Microsoft.AspNetCore.OpenApi` instead of
+  being pinned here.
 
 ---
 
