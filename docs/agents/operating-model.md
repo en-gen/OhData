@@ -231,8 +231,9 @@ Overwatch handles the event, then starts a new watcher, until the PR is merged
 or closed. It records the event and the head SHA, and tells the new watcher to
 suppress that same event for that SHA only while its condition stays true; once
 it clears (a check passes on rerun), the suppression ends and a recurrence is a
-new event. A failing check is suppressed per check name, so another check that
-starts failing on the same SHA is its own event. It keeps polling for merge, closure and the other events. To handle one, it resumes the team lead with `SendMessage` and the
+new event. A failing check is suppressed per run, keyed on a CheckRun's
+`detailsUrl` (two runs can share a name) or a StatusContext's `context`, so
+another run that starts failing on the same SHA is its own event. It keeps polling for merge, closure and the other events. To handle one, it resumes the team lead with `SendMessage` and the
 lead runs the fix: the implementer (merging `origin/develop` into the branch
 for a conflict), then the verifier and steward as the
 Verify rule requires. On MERGED, whoever merged, Overwatch runs Close. On CLOSED without a merge it keeps the branch and worktree, comments both on the issue so a later team reuses them, moves the issue back to Ready on the board, records it in the state file and tells the owner. On
