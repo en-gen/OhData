@@ -10,6 +10,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -19,12 +20,14 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
 using System.Xml;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Http.Features.Authentication;
 using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.OData.Query;
 using Microsoft.AspNetCore.OData.Query.Expressions;
@@ -2003,6 +2006,50 @@ internal static class OhDataEndpointFactory
         }
     }
 
+    // As AuthorizationMiddleware does after a successful authenticate: setting HttpContext.User clears the
+    // feature's cached result, so publish the new one for handlers reading IAuthenticateResultFeature.
+    private static void PublishAuthenticateResult(HttpContext ctx, AuthenticateResult? result)
+    {
+        if (!(result?.Succeeded ?? false)) return;
+        if (ctx.Features.Get<IAuthenticateResultFeature>() is { } feature)
+        {
+            feature.AuthenticateResult = result;
+            return;
+        }
+        var features = new AuthenticationFeatures(result);
+        ctx.Features.Set<IHttpAuthenticationFeature>(features);
+        ctx.Features.Set<IAuthenticateResultFeature>(features);
+    }
+
+    // Private equivalent of the internal type the middleware uses: keeps User and the result consistent.
+    private sealed class AuthenticationFeatures : IAuthenticateResultFeature, IHttpAuthenticationFeature
+    {
+        private ClaimsPrincipal? _user;
+        private AuthenticateResult? _result;
+
+        public AuthenticationFeatures(AuthenticateResult result) => AuthenticateResult = result;
+
+        public AuthenticateResult? AuthenticateResult
+        {
+            get => _result;
+            set
+            {
+                _result = value;
+                _user = value?.Principal;
+            }
+        }
+
+        public ClaimsPrincipal? User
+        {
+            get => _user;
+            set
+            {
+                _user = value;
+                _result = null;
+            }
+        }
+    }
+
     /// <summary>
     /// #795: evaluates the collection POST endpoint's own authorization (group conventions, fallback
     /// policy, Create rule) as <c>AuthorizationMiddleware</c> would, for the upsert create branch.
@@ -2062,6 +2109,7 @@ internal static class OhDataEndpointFactory
 
             var evaluator = ctx.RequestServices.GetRequiredService<IPolicyEvaluator>();
             var authn = await evaluator.AuthenticateAsync(policy, ctx);
+            PublishAuthenticateResult(ctx, authn);
             object resource = AppContext.TryGetSwitch(
                 "Microsoft.AspNetCore.Authorization.SuppressUseHttpContextAsAuthorizationResource", out bool useEndpoint) && useEndpoint
                 ? endpoint

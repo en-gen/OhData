@@ -296,6 +296,69 @@ internal sealed class UpsertEndpointAuthHandler : AuthenticationHandler<Authenti
     }
 }
 
+// A scheme whose ticket carries a property, and a handler that reads it back through the
+// authenticate-result feature, the way a tenant-aware requirement handler would.
+internal sealed class UpsertTicketAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+{
+    public const string SchemeName = "UpsertTicketScheme";
+    public static readonly DateTimeOffset Expiry = new(2090, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    public UpsertTicketAuthHandler(
+        Microsoft.Extensions.Options.IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger, System.Text.Encodings.Web.UrlEncoder encoder) : base(options, logger, encoder) { }
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        var id = new System.Security.Claims.ClaimsIdentity(
+            [new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Name, "tenant-user")], SchemeName);
+        var props = new AuthenticationProperties { ExpiresUtc = Expiry };
+        return Task.FromResult(AuthenticateResult.Success(
+            new AuthenticationTicket(new System.Security.Claims.ClaimsPrincipal(id), props, SchemeName)));
+    }
+}
+
+internal sealed class UpsertTicketRequirement : IAuthorizationRequirement { }
+
+internal sealed class UpsertTicketHandler : AuthorizationHandler<UpsertTicketRequirement>
+{
+    protected override Task HandleRequirementAsync(AuthorizationHandlerContext ctx, UpsertTicketRequirement req)
+    {
+        if (ctx.Resource is HttpContext http
+            && http.Features.Get<IAuthenticateResultFeature>()?.AuthenticateResult?.Properties?.ExpiresUtc
+                == UpsertTicketAuthHandler.Expiry)
+        {
+            ctx.Succeed(req);
+        }
+        return Task.CompletedTask;
+    }
+}
+
+internal sealed class UpsertTicketProfile : UpsertProfileBase
+{
+    public static readonly int[] C = new int[2];
+    protected override int[] Counters => C;
+    public UpsertTicketProfile()
+    {
+        EntitySetName = "UpsertTicket";
+        ConfigureAuthorization(a => a
+            .Create(c => c.RequirePolicy("TicketPolicy"))
+            .Update(u => u.RequireAuthenticatedUser()));
+    }
+}
+
+internal sealed class UpsertTicketAnonUpdateProfile : UpsertProfileBase
+{
+    public static readonly int[] C = new int[2];
+    protected override int[] Counters => C;
+    public UpsertTicketAnonUpdateProfile()
+    {
+        EntitySetName = "UpsertTicketAnon";
+        ConfigureAuthorization(a => a
+            .Create(c => c.RequirePolicy("TicketPolicy"))
+            .Update(u => u.AllowAnonymous()));
+    }
+}
+
 internal sealed class UpsertEndpointMethodHandler : AuthorizationHandler<UpsertEndpointMethodRequirement>
 {
     protected override Task HandleRequirementAsync(AuthorizationHandlerContext ctx, UpsertEndpointMethodRequirement req)
@@ -703,9 +766,41 @@ public class Issue795UpsertCreateRuleTests
         await AssertSameVerdictAsync(fx, "UpsertSchemePolicy", UpsertSchemePolicyProfile.C, HttpStatusCode.Created, "bob", null);
     }
 
+    private static void AddTicketScheme(OhDataBuilder o)
+    {
+        o.Services.AddAuthentication()
+            .AddScheme<AuthenticationSchemeOptions, UpsertTicketAuthHandler>(UpsertTicketAuthHandler.SchemeName, _ => { });
+        o.Services.AddSingleton<IAuthorizationHandler, UpsertTicketHandler>();
+    }
+
+    private static void TicketPolicy(AuthorizationOptions p) =>
+        p.AddPolicy("TicketPolicy", b => b
+            .AddAuthenticationSchemes(UpsertTicketAuthHandler.SchemeName)
+            .AddRequirements(new UpsertTicketRequirement()));
+
+    // UseAuthentication ran, so the authenticate-result feature already exists when the gate runs.
+    [Fact]
+    public async Task CreateTicketReadViaAuthenticateResultFeature_FeaturePresent_MatchesPost()
+    {
+        await using var fx = await PerOpAuthTestHost.BuildAsync(
+            o => { o.AddEntitySetProfile<UpsertTicketProfile>(); AddTicketScheme(o); }, policies: TicketPolicy);
+        await AssertSameVerdictAsync(fx, "UpsertTicket", UpsertTicketProfile.C, HttpStatusCode.Created, "bob", null);
+    }
+
+    // No UseAuthentication: nothing registered the feature, so the gate must create it as the middleware does.
+    [Fact]
+    public async Task CreateTicketReadViaAuthenticateResultFeature_FeatureAbsent_MatchesPost()
+    {
+        await using var fx = await BuildRecordingHostAsync(
+            o => { o.AddEntitySetProfile<UpsertTicketAnonUpdateProfile>(); AddTicketScheme(o); },
+            new UpsertEndpointRecorder(), policies: TicketPolicy, useAuthenticationMiddleware: false);
+        await AssertSameVerdictAsync(fx, "UpsertTicketAnon", UpsertTicketAnonUpdateProfile.C, HttpStatusCode.Created, null, null);
+    }
+
     // PerOpAuthTestHost plus a middleware that records the endpoint the request leaves with.
     private static async Task<TestFixture> BuildRecordingHostAsync(
-        Action<OhDataBuilder> configure, UpsertEndpointRecorder recorder, Action<AuthorizationOptions>? policies = null)
+        Action<OhDataBuilder> configure, UpsertEndpointRecorder recorder, Action<AuthorizationOptions>? policies = null,
+        bool useAuthenticationMiddleware = true)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -723,7 +818,7 @@ public class Issue795UpsertCreateRuleTests
             configure(o);
         });
         var app = builder.Build();
-        app.UseAuthentication();
+        if (useAuthenticationMiddleware) app.UseAuthentication();
         app.UseAuthorization();
         app.Use(async (ctx, next) =>
         {
