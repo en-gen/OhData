@@ -2102,11 +2102,9 @@ internal static class ExpandEngine
             return names;
         }, options);
 
-    // $select names are EDM identifiers; payload keys are what the serializer wrote. Maps each name
-    // to the contract key. A name <paramref name="isNavigation"/> accepts also gets the key
-    // ResolveNavigationJsonKey gives it, because that is the key the $expand injection writes; a
-    // structural property gets the contract key only, so a policy key another member owns cannot
-    // keep that member.
+    // Maps $select EDM names to the keys the serializer wrote: the contract key, plus, for a name
+    // isNavigation accepts, the ResolveNavigationJsonKey key the $expand injection writes. Structural
+    // names get the contract key only, so a policy key another member owns cannot keep that member.
     internal static HashSet<string> ResolveSelectedJsonKeys(
         IReadOnlyList<string> edmNames, IEnumerable<Type> clrTypes, JsonSerializerOptions? serializerOptions,
         Func<string, bool>? isNavigation = null)
