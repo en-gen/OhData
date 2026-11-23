@@ -1421,12 +1421,11 @@ status codes or headers.
   above GHSA-v5pm-xwqc-g5wc (patched in 2.7.5), and the `Microsoft.OpenApi` floor now follows
   `Microsoft.AspNetCore.OpenApi` instead of being pinned here.
 
-  **⚠ BREAKING CHANGE for a consumer that references `Microsoft.AspNetCore.OpenApi` directly at a
-  version below that range's floor** (1.7.0 allowed 10.0.11): restore fails with NU1605. Update the
-  direct reference to the version in the package's dependency range or later. Suppressing NU1605
-  instead forces an older `Microsoft.AspNetCore.OpenApi`, which can resolve `Microsoft.OpenApi`
-  2.0.0 and loses the guarantee above (NU1903 still warns); update the direct reference rather than
-  suppress.
+  **⚠ BREAKING CHANGE — a consumer that references `Microsoft.AspNetCore.OpenApi` directly below
+  that range's floor** (1.7.0 allowed 10.0.11) now fails restore with NU1605. Update the direct
+  reference to a version within the package's dependency range rather than suppressing NU1605:
+  suppression keeps the older `Microsoft.AspNetCore.OpenApi` and a `Microsoft.OpenApi` below the
+  version this package was built against.
 
 ---
 
