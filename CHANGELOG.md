@@ -1411,6 +1411,14 @@ status codes or headers.
   rather than skipping: all five semaphores deleted first and regenerated, zero `CP####`, and the
   five `1.7.0` baseline packages appeared in the NuGet cache for the first time.
 
+- **`EnGen.OhData.AspNetCore.OpenApi` no longer references `Microsoft.OpenApi` directly (#TBD).**
+  `dotnet restore` failed with NU1605 because the direct `[2.12.2, 3.0.0)` reference sat below the
+  `>= 2.13.0` that `Microsoft.AspNetCore.OpenApi` 10.0.15 requires. The package now takes
+  `Microsoft.OpenApi` only through `Microsoft.AspNetCore.OpenApi`, whose nuspec floor of `10.0.15`
+  brings `Microsoft.OpenApi [2.13.0, 3.0.0)`: consumers still resolve above GHSA-v5pm-xwqc-g5wc
+  (patched in 2.7.5), and the floor now follows `Microsoft.AspNetCore.OpenApi` instead of being
+  pinned here.
+
 ---
 
 ## [1.7.0] - 2026-08-31
