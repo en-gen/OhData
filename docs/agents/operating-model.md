@@ -229,8 +229,9 @@ at a sensible interval and exits on its first event, reporting it:
 
 Overwatch handles the event, then starts a new watcher, until the PR is merged
 or closed. It records the event and the head SHA, and tells the new watcher to
-suppress that same event for that SHA while it keeps polling for merge,
-closure and the other events. To handle one, it resumes the team lead with `SendMessage` and the
+suppress that same event for that SHA only while its condition stays true; once
+it clears (a check passes on rerun), the suppression ends and a recurrence is a
+new event. It keeps polling for merge, closure and the other events. To handle one, it resumes the team lead with `SendMessage` and the
 lead runs the fix: the implementer (merging `origin/develop` into the branch
 for a conflict), then the verifier and steward as the
 Verify rule requires. On MERGED, whoever merged, Overwatch runs Close. On CLOSED without a merge it keeps the branch and worktree, comments both on the issue so a later team reuses them, moves the issue back to Ready on the board, records it in the state file and tells the owner. On
