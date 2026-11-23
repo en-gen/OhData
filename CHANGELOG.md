@@ -791,6 +791,14 @@ status codes or headers.
 ### Fixed
 
 - **An upsert `PUT` now authorizes its create branch like the collection `POST` (#795, security).** With `AllowUpsert`, a `PUT` to a missing key ran the `Post` handler under the Update rule alone, so a caller holding Update but not Create got `201 Created`, and an `AllowAnonymous()` Update rule also bypassed group-level `RequireAuthorization` and the fallback policy. The create branch now evaluates the collection `POST` endpoint's authorization (group, fallback policy, Create rule; `401` or `403` as the `POST` answers, through the host's `IAuthorizationMiddlewareResultHandler`) and the Create `.RequireResource()` check against the incoming model before `Post`. `PUT` to an existing key is unchanged.
+
+- **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
+  The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
+  they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`
+  with empty objects. The strip now resolves each selected name to the key the serializer wrote for that CLR
+  member (the serializer contract of each row's runtime type, so `[JsonPropertyName]`, the policy and host modifiers are all honoured) and compares key to key, on the
+  collection, by-key, navigation-collection, nested-`$select` and pushed `$expand`/`$levels` paths.
+
 - **A `MappedEntitySetProfile` `GET /Set/$count` returned `MappedPageSize` instead of the total (#759).**
   The route counted the handler's windowed page. The mapped handler now recognises the count route
   and returns the whole filtered set, so the count is one provider `COUNT` that ignores `$top`/`$skip`.
@@ -1411,6 +1419,22 @@ status codes or headers.
   develops against the release that just shipped. Verified this pack really used the new baseline
   rather than skipping: all five semaphores deleted first and regenerated, zero `CP####`, and the
   five `1.7.0` baseline packages appeared in the NuGet cache for the first time.
+
+- **`EnGen.OhData.AspNetCore.OpenApi` no longer references `Microsoft.OpenApi` directly (#858).**
+  `dotnet restore` failed with NU1605 because the direct `[2.12.2, 3.0.0)` reference sat below the
+  `>= 2.13.0` that `Microsoft.AspNetCore.OpenApi` 10.0.15 requires. The package now takes
+  `Microsoft.OpenApi` only through `Microsoft.AspNetCore.OpenApi`. This package's nuspec writes
+  that dependency as `[10.0.x, 11.0.0)`, with `10.0.x` the patch restore resolves at pack time
+  (`10.0.15` today). Every `Microsoft.AspNetCore.OpenApi` 10.0.x from 10.0.11 requires
+  `Microsoft.OpenApi` 2.7.5 or later, so a restore that honours the package's dependency range stays
+  above GHSA-v5pm-xwqc-g5wc (patched in 2.7.5), and the `Microsoft.OpenApi` floor now follows
+  `Microsoft.AspNetCore.OpenApi` instead of being pinned here.
+
+  **⚠ BREAKING CHANGE — a consumer that references `Microsoft.AspNetCore.OpenApi` directly below
+  that range's floor** (1.7.0 allowed 10.0.11) now fails restore with NU1605. Update the direct
+  reference to a version within the package's dependency range rather than suppressing NU1605:
+  suppression keeps the older `Microsoft.AspNetCore.OpenApi` and a `Microsoft.OpenApi` below the
+  version this package was built against.
 
 ---
 
