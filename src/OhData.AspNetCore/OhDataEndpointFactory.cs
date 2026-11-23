@@ -2053,18 +2053,29 @@ internal static class OhDataEndpointFactory
         }
         if (policy is null) return null;
 
-        var evaluator = ctx.RequestServices.GetRequiredService<IPolicyEvaluator>();
-        var authn = await evaluator.AuthenticateAsync(policy, ctx);
-        object resource = AppContext.TryGetSwitch(
-            "Microsoft.AspNetCore.Authorization.SuppressUseHttpContextAsAuthorizationResource", out bool useEndpoint) && useEndpoint
-            ? endpoint
-            : ctx;
-        var authz = await evaluator.AuthorizeAsync(policy, authn, ctx, resource);
+        // The middleware evaluates with the endpoint being authorized on the context; handlers read its
+        // metadata from there. Swap it for the evaluation only, so the PUT endpoint is back afterwards.
+        Endpoint? requestEndpoint = ctx.GetEndpoint();
+        ctx.SetEndpoint(endpoint);
+        try
+        {
+            var evaluator = ctx.RequestServices.GetRequiredService<IPolicyEvaluator>();
+            var authn = await evaluator.AuthenticateAsync(policy, ctx);
+            object resource = AppContext.TryGetSwitch(
+                "Microsoft.AspNetCore.Authorization.SuppressUseHttpContextAsAuthorizationResource", out bool useEndpoint) && useEndpoint
+                ? endpoint
+                : ctx;
+            var authz = await evaluator.AuthorizeAsync(policy, authn, ctx, resource);
 
-        bool proceed = false;
-        var handler = ctx.RequestServices.GetRequiredService<IAuthorizationMiddlewareResultHandler>();
-        await handler.HandleAsync(_ => { proceed = true; return Task.CompletedTask; }, ctx, policy, authz);
-        return proceed ? null : Results.Empty;
+            bool proceed = false;
+            var handler = ctx.RequestServices.GetRequiredService<IAuthorizationMiddlewareResultHandler>();
+            await handler.HandleAsync(_ => { proceed = true; return Task.CompletedTask; }, ctx, policy, authz);
+            return proceed ? null : Results.Empty;
+        }
+        finally
+        {
+            ctx.SetEndpoint(requestEndpoint);
+        }
     }
 
     /// <summary>
@@ -5509,6 +5520,7 @@ internal static class OhDataEndpointFactory
             {
                 logger?.LogDebug("PUT {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
                 if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
+                bool authorizingCreate = false;
                 try
                 {
                     var s = ResolveHandlers(ctx);
@@ -5671,7 +5683,10 @@ internal static class OhDataEndpointFactory
                     bool wasCreated = false;
                     if (result is null && source.AllowUpsert && source.HasPost)
                     {
+                        // A JsonException from a policy handler is a server fault, not a malformed body.
+                        authorizingCreate = true;
                         IResult? upsertCreateAuthFail = await CheckUpsertCreateAuthAsync(ctx, model);
+                        authorizingCreate = false;
                         if (upsertCreateAuthFail is not null) return upsertCreateAuthFail;
                         result = await WithExceptionMapping(s.InvokePostAsync(model, ct), source, ctx, OhDataOperation.Create, model: model);
                         wasCreated = true;
@@ -5712,7 +5727,7 @@ internal static class OhDataEndpointFactory
                         return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, registration.EdmModel, odataId: odataId, etag: putEtag, omitNavsForType: rootEdmType));
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, registration.EdmModel, odataId: odataId, etag: putEtag, omitNavsForType: rootEdmType);
                 }
-                catch (JsonException ex)
+                catch (JsonException ex) when (!authorizingCreate)
                 {
                     return ODataError(400, "InvalidBody", ex.Message);
                 }

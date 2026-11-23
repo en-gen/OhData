@@ -241,6 +241,99 @@ internal sealed class UpsertAnonNoCreateOtherProfile : UpsertProfileBase
     }
 }
 
+// Decides on the endpoint the HttpContext carries, as a handler reading endpoint metadata does.
+internal sealed class UpsertEndpointMethodRequirement : IAuthorizationRequirement { }
+
+internal static class UpsertEndpointProbe
+{
+    public static readonly List<string> ResourceCheckMethods = [];
+
+    public static string? Method(HttpContext http) =>
+        http.GetEndpoint()?.Metadata.GetMetadata<IHttpMethodMetadata>()?.HttpMethods.FirstOrDefault();
+}
+
+internal sealed class UpsertEndpointMethodHandler : AuthorizationHandler<UpsertEndpointMethodRequirement>
+{
+    protected override Task HandleRequirementAsync(AuthorizationHandlerContext ctx, UpsertEndpointMethodRequirement req)
+    {
+        if (ctx.Resource is HttpContext http && UpsertEndpointProbe.Method(http) == "POST") ctx.Succeed(req);
+        return Task.CompletedTask;
+    }
+}
+
+// Records the endpoint seen when the Create resource check runs, which is after the coarse gate.
+internal sealed class UpsertEndpointRecordingResourceHandler : AuthorizationHandler<OperationAuthorizationRequirement, UpsertItem>
+{
+    private readonly IHttpContextAccessor _accessor;
+    public UpsertEndpointRecordingResourceHandler(IHttpContextAccessor accessor) => _accessor = accessor;
+
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext ctx, OperationAuthorizationRequirement req, UpsertItem item)
+    {
+        lock (UpsertEndpointProbe.ResourceCheckMethods)
+            UpsertEndpointProbe.ResourceCheckMethods.Add(UpsertEndpointProbe.Method(_accessor.HttpContext!) ?? "none");
+        ctx.Succeed(req);
+        return Task.CompletedTask;
+    }
+}
+
+internal sealed class UpsertEndpointResultHandler : IAuthorizationMiddlewareResultHandler
+{
+    public Task HandleAsync(RequestDelegate next, HttpContext context, AuthorizationPolicy policy, PolicyAuthorizationResult result)
+    {
+        if (!result.Forbidden) return next(context);
+        context.Response.StatusCode = UpsertEndpointProbe.Method(context) == "POST" ? 418 : 419;
+        return Task.CompletedTask;
+    }
+}
+
+internal sealed class UpsertJsonFaultRequirement : IAuthorizationRequirement { }
+
+internal sealed class UpsertJsonFaultHandler : AuthorizationHandler<UpsertJsonFaultRequirement>
+{
+    protected override Task HandleRequirementAsync(AuthorizationHandlerContext ctx, UpsertJsonFaultRequirement req) =>
+        throw new System.Text.Json.JsonException("policy dependency failed");
+}
+
+internal sealed class UpsertEndpointPolicyProfile : UpsertProfileBase
+{
+    public static readonly int[] C = new int[2];
+    protected override int[] Counters => C;
+    public UpsertEndpointPolicyProfile()
+    {
+        EntitySetName = "UpsertEndpointPolicy";
+        ConfigureAuthorization(a => a
+            .Create(c => c.RequirePolicy("EndpointIsPost"))
+            .Update(u => u.RequireAuthenticatedUser()));
+    }
+}
+
+internal sealed class UpsertEndpointResourceProfile : UpsertProfileBase
+{
+    public static readonly int[] C = new int[2];
+    protected override int[] Counters => C;
+    public UpsertEndpointResourceProfile()
+    {
+        EntitySetName = "UpsertEndpointRes";
+        ConfigureAuthorization(a => a
+            .Create(c => c.RequireResource())
+            .Update(u => u.RequireAuthenticatedUser()));
+    }
+}
+
+internal sealed class UpsertJsonFaultProfile : UpsertProfileBase
+{
+    public static readonly int[] C = new int[2];
+    protected override int[] Counters => C;
+    public UpsertJsonFaultProfile()
+    {
+        EntitySetName = "UpsertJsonFault";
+        ConfigureAuthorization(a => a
+            .Create(c => c.RequirePolicy("JsonFault"))
+            .Update(u => u.RequireAuthenticatedUser()));
+    }
+}
+
 public class Issue795UpsertCreateRuleTests
 {
     private static HttpRequestMessage Req(
@@ -421,6 +514,74 @@ public class Issue795UpsertCreateRuleTests
         await AssertSameVerdictAsync(fx, "UpsertAllowList", UpsertAllowListProfile.C, HttpStatusCode.Created, "bob", null,
             ("X-Allowed", "1"));
         await AssertSameVerdictAsync(fx, "UpsertAllowList", UpsertAllowListProfile.C, HttpStatusCode.Forbidden, "bob", null);
+    }
+
+    // AuthorizationMiddleware evaluates a policy with the endpoint being authorized on the
+    // HttpContext, so a handler reading endpoint metadata must see the collection POST's.
+    [Fact]
+    public async Task P6_PolicyReadsEndpointMetadata_CreateSeesThePostEndpoint()
+    {
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o =>
+        {
+            o.AddEntitySetProfile<UpsertEndpointPolicyProfile>();
+            o.Services.AddSingleton<IAuthorizationHandler, UpsertEndpointMethodHandler>();
+        }, policies: p => p.AddPolicy("EndpointIsPost", b => b.AddRequirements(new UpsertEndpointMethodRequirement())));
+        await AssertSameVerdictAsync(fx, "UpsertEndpointPolicy", UpsertEndpointPolicyProfile.C, HttpStatusCode.Created, "bob", null);
+    }
+
+    [Fact]
+    public async Task ResultHandlerReadsEndpointMetadata_CreateDenialSeesThePostEndpoint()
+    {
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o =>
+        {
+            o.AddEntitySetProfile<UpsertCreateRoleProfile>();
+            o.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, UpsertEndpointResultHandler>();
+        });
+        await AssertSameVerdictAsync(fx, "UpsertRole", UpsertCreateRoleProfile.C, (HttpStatusCode)418, "bob", null);
+    }
+
+    // The gate swaps the endpoint only for its own evaluation; the resource check and the Post
+    // handler that follow still run on the PUT endpoint.
+    [Fact]
+    public async Task EndpointIsRestoredToThePut_AfterTheGate()
+    {
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o =>
+        {
+            o.AddEntitySetProfile<UpsertEndpointResourceProfile>();
+            o.Services.AddHttpContextAccessor();
+            o.Services.AddSingleton<IAuthorizationHandler, UpsertEndpointRecordingResourceHandler>();
+        });
+        Array.Clear(UpsertEndpointResourceProfile.C);
+        lock (UpsertEndpointProbe.ResourceCheckMethods) UpsertEndpointProbe.ResourceCheckMethods.Clear();
+
+        var put = await fx.Client.SendAsync(Req(HttpMethod.Put, "/odata/UpsertEndpointRes(93001)", "bob", null, Body(93001)));
+
+        Assert.Equal(HttpStatusCode.Created, put.StatusCode);
+        Assert.Equal(1, UpsertEndpointResourceProfile.C[0]);
+        lock (UpsertEndpointProbe.ResourceCheckMethods)
+            Assert.Equal(["PUT"], UpsertEndpointProbe.ResourceCheckMethods);
+    }
+
+    // A JsonException from a policy handler is a server fault on the POST (the middleware does not
+    // catch it); on the PUT create it must not be reported as a malformed body.
+    [Fact]
+    public async Task PolicyHandlerThrowingJsonException_PutCreateIsAServerFault_NotInvalidBody()
+    {
+        await using var fx = await PerOpAuthTestHost.BuildAsync(o =>
+        {
+            o.AddEntitySetProfile<UpsertJsonFaultProfile>();
+            o.Services.AddSingleton<IAuthorizationHandler, UpsertJsonFaultHandler>();
+        }, policies: p => p.AddPolicy("JsonFault", b => b.AddRequirements(new UpsertJsonFaultRequirement())));
+        Array.Clear(UpsertJsonFaultProfile.C);
+
+        await Assert.ThrowsAsync<System.Text.Json.JsonException>(() =>
+            fx.Client.SendAsync(Req(HttpMethod.Post, "/odata/UpsertJsonFault", "bob", null, Body(94001))));
+
+        var put = await fx.Client.SendAsync(Req(HttpMethod.Put, "/odata/UpsertJsonFault(94002)", "bob", null, Body(94002)));
+        string text = await put.Content.ReadAsStringAsync();
+        Assert.True(put.StatusCode == HttpStatusCode.InternalServerError, $"{(int)put.StatusCode} {text}");
+        Assert.DoesNotContain("InvalidBody", text);
+        Assert.Equal(0, UpsertJsonFaultProfile.C[0]);
     }
 
     [Fact]
