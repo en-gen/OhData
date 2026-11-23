@@ -28,16 +28,6 @@
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="[10.*, 11)" />
-		<!--
-		  Deliberate direct reference: Microsoft.AspNetCore.OpenApi floors its
-		  Microsoft.OpenApi dependency at 2.0.0, which is vulnerable
-		  (GHSA-v5pm-xwqc-g5wc, patched in 2.7.5). Referencing the patched range
-		  directly floors OUR consumers at the safe version via this package's
-		  nuspec instead of suppressing the NU1903 audit and shipping the
-		  vulnerable resolution. Remove when Microsoft.AspNetCore.OpenApi raises
-		  its own floor past 2.7.4.
-		-->
-		<PackageReference Include="Microsoft.OpenApi" Version="[2.12.2, 3.0.0)" />
 	</ItemGroup>
 
 </Project>

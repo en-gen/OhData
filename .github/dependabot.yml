@@ -10,9 +10,10 @@ version: 2
 # packages on its own PR, where it gets its own review and its own CHANGELOG line.
 #
 # The split is not "important vs unimportant" — it is "does this change what an adopter
-# resolves". The six excluded ids below are PackageReferences of the five packable projects,
+# resolves". The five excluded ids below are PackageReferences of the packable projects,
 # so a bump there moves a dependency RANGE in the published .nuspec (1.7.0 shipped exactly
-# such a change: Microsoft.OpenApi's minimum went 2.12.0 -> 2.12.2). Microsoft.OData.Client
+# such a change, when the then-direct Microsoft.OpenApi minimum went 2.12.0 -> 2.12.2).
+# Microsoft.OpenApi is no longer referenced directly, so it is not excluded. Microsoft.OData.Client
 # is excluded for a different reason: it is dev-only, but it is the compatibility TARGET of
 # OhData.MicrosoftODataClient.Tests, and several claims in CLAUDE.md and the CHANGELOG are
 # measured against a specific version of it. A silent batch bump would invalidate a measured
@@ -43,7 +44,6 @@ updates:
           - "Microsoft.AspNetCore.OData"
           - "Microsoft.AspNetCore.OpenApi"
           - "Microsoft.OData.ModelBuilder"
-          - "Microsoft.OpenApi"
           - "NSwag.Generation.AspNetCore"
           - "Swashbuckle.AspNetCore.SwaggerGen"
           # --- dev-only, but the measured compatibility target of the MS-client suite ---
