@@ -794,7 +794,7 @@ status codes or headers.
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
   they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`
   with empty objects. The strip now resolves each selected name to the key the serializer wrote for that CLR
-  member (the serializer contract, so `[JsonPropertyName]`, the policy and host modifiers are all honoured) and compares key to key, on the
+  member (the serializer contract of each row's runtime type, so `[JsonPropertyName]`, the policy and host modifiers are all honoured) and compares key to key, on the
   collection, by-key, navigation-collection, nested-`$select` and pushed `$expand`/`$levels` paths.
 
 - **A `MappedEntitySetProfile` `GET /Set/$count` returned `MappedPageSize` instead of the total (#759).**

@@ -19,11 +19,17 @@ namespace OhData.AspNetCore.Tests;
 // Fixtures vary the naming policy, multi-word property and navigation names, a derived runtime type
 // and a [JsonPropertyName] member.
 
-public sealed class Sn768Phone
+[JsonDerivedType(typeof(Sn768SimPhone))]
+public class Sn768Phone
 {
     public int Id { get; set; }
     public string PhoneNumber { get; set; } = "";
     public string CarrierName { get; set; } = "";
+}
+
+public sealed class Sn768SimPhone : Sn768Phone
+{
+    public int SimSlot { get; set; }
 }
 
 [JsonDerivedType(typeof(Sn768Employee))]
@@ -31,6 +37,7 @@ public class Sn768Person
 {
     public int Id { get; set; }
     public string FirstName { get; set; } = "";
+    public string LastName { get; set; } = "";
     [JsonPropertyName("custom_label")]
     public string Label { get; set; } = "";
     public List<Sn768Phone> MobilePhones { get; set; } = new();
@@ -47,10 +54,18 @@ public sealed class Sn768PersonProfile : EntitySetProfile<int, Sn768Person>
     {
         new Sn768Person
         {
-            Id = 1, FirstName = "Ada", Label = "L1",
+            Id = 1, FirstName = "Ada", LastName = "Lovelace", Label = "L1",
             MobilePhones = { new Sn768Phone { Id = 10, PhoneNumber = "555", CarrierName = "C1" } },
         },
-        new Sn768Employee { Id = 2, FirstName = "Alan", Label = "L2", BadgeNumber = "B2" },
+        new Sn768Employee
+        {
+            Id = 2, FirstName = "Alan", LastName = "Turing", Label = "L2", BadgeNumber = "B2",
+            MobilePhones =
+            {
+                new Sn768Phone { Id = 21, PhoneNumber = "888", CarrierName = "C8" },
+                new Sn768SimPhone { Id = 20, PhoneNumber = "777", CarrierName = "C7", SimSlot = 2 },
+            },
+        },
     };
 
     public Sn768PersonProfile() : base(x => x.Id)
@@ -380,5 +395,79 @@ public class Issue768SelectNamingPolicyTests
         string both = await Ok(fx, "/odata/Sn768People?$select=FirstName&$expand=MobilePhones");
         Assert.Contains($"\"{first}\":\"Ada\"", both);
         Assert.Contains($"\"{number}\":\"555\"", both);
+    }
+
+    private static Task<TestFixture> BuildWithModifier(JsonNamingPolicy? policy, Action<JsonTypeInfo> modifier) => TestHostBuilder.BuildAsync(
+        o =>
+        {
+            if (policy is not null) o.WithJsonPropertyNamingPolicy(policy);
+            o.AddEntitySetProfile<Sn768PersonProfile>();
+        },
+        configureServices: s => s.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(j =>
+            j.SerializerOptions.TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { modifier } }));
+
+    // Thread A: the modifier swaps names so the naming-policy key of FirstName ("first_name") is the
+    // contract key of the UNSELECTED LastName. A structural property contributes its contract key only.
+    private static void SwapFirstAndLast(JsonTypeInfo ti)
+    {
+        foreach (JsonPropertyInfo p in ti.Properties)
+        {
+            if (p.AttributeProvider is not System.Reflection.PropertyInfo pi) continue;
+            if (pi.Name == "FirstName") p.Name = "given_name";
+            else if (pi.Name == "LastName") p.Name = "first_name";
+        }
+    }
+
+    [Fact]
+    public async Task Collection_StructuralSelect_DoesNotKeepUnselectedPropertyThatOwnsThePolicyKey()
+    {
+        await using var fx = await BuildWithModifier(JsonNamingPolicy.SnakeCaseLower, SwapFirstAndLast);
+        string body = await Ok(fx, "/odata/Sn768People?$select=FirstName");
+        Assert.Contains("\"given_name\":\"Ada\"", body);
+        Assert.DoesNotContain("first_name", body);
+        Assert.DoesNotContain("Lovelace", body);
+    }
+
+    [Fact]
+    public async Task ByKey_StructuralSelect_DoesNotKeepUnselectedPropertyThatOwnsThePolicyKey()
+    {
+        await using var fx = await BuildWithModifier(JsonNamingPolicy.SnakeCaseLower, SwapFirstAndLast);
+        string body = await Ok(fx, "/odata/Sn768People(1)?$select=FirstName");
+        Assert.Contains("\"given_name\":\"Ada\"", body);
+        Assert.DoesNotContain("first_name", body);
+        Assert.DoesNotContain("Lovelace", body);
+    }
+
+    // Thread B: a type-dependent modifier gives an inherited property a different contract key on the
+    // derived type, so a strip keyed on the declared type alone drops the derived row's value.
+    private static void RenameOnDerivedTypes(JsonTypeInfo ti)
+    {
+        foreach (JsonPropertyInfo p in ti.Properties)
+        {
+            if (p.AttributeProvider is not System.Reflection.PropertyInfo pi) continue;
+            if (ti.Type == typeof(Sn768Employee) && pi.Name == "FirstName") p.Name = "emp_first";
+            if (ti.Type == typeof(Sn768SimPhone) && pi.Name == "PhoneNumber") p.Name = "sim_number";
+        }
+    }
+
+    [Fact]
+    public async Task Collection_SelectInheritedProperty_DerivedRowWithTypeDependentKey_KeepsIt()
+    {
+        await using var fx = await BuildWithModifier(null, RenameOnDerivedTypes);
+        string body = await Ok(fx, "/odata/Sn768People?$select=FirstName");
+        Assert.Contains("\"FirstName\":\"Ada\"", body);
+        Assert.Contains("\"emp_first\":\"Alan\"", body);
+        Assert.DoesNotContain("B2", body);
+    }
+
+    [Fact]
+    public async Task NavigationCollection_SelectInheritedProperty_DerivedRowWithTypeDependentKey_KeepsIt()
+    {
+        await using var fx = await BuildWithModifier(null, RenameOnDerivedTypes);
+        string body = await Ok(fx, "/odata/Sn768People(2)/MobilePhones?$select=PhoneNumber");
+        Assert.Contains("\"PhoneNumber\":\"888\"", body);
+        Assert.Contains("\"sim_number\":\"777\"", body);
+        Assert.DoesNotContain("SimSlot", body);
+        Assert.DoesNotContain("arrier", body);
     }
 }

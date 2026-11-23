@@ -219,7 +219,9 @@ internal static class ExpandEngine
             {
                 StripToSelectedProperties(
                     json.OfType<JsonObject>(),
-                    ResolveSelectedJsonKeys(selectedProps, new[] { source.ModelType }, serializerOptions));
+                    ResolveSelectedJsonKeys(
+                        selectedProps, RuntimeTypesOf(originalItems, source.ModelType), serializerOptions,
+                        n => rootEdmType?.FindProperty(n) is IEdmNavigationProperty));
             }
         }
 
@@ -711,7 +713,9 @@ internal static class ExpandEngine
                 {
                     StripToSelectedProperties(
                         childObjects,
-                        ResolveSelectedJsonKeys(nestedSelected, RuntimeTypesOf(childItems, null), serializerOptions));
+                        ResolveSelectedJsonKeys(
+                            nestedSelected, RuntimeTypesOf(childItems, null), serializerOptions,
+                            n => targetEdmType?.FindProperty(n) is IEdmNavigationProperty));
                 }
             }
         }
@@ -2099,10 +2103,13 @@ internal static class ExpandEngine
         }, options);
 
     // $select names are EDM identifiers; payload keys are what the serializer wrote. Maps each name
-    // to the contract key, plus the key ResolveNavigationJsonKey gives it, because that is the key
-    // the $expand injection writes for a navigation.
+    // to the contract key. A name <paramref name="isNavigation"/> accepts also gets the key
+    // ResolveNavigationJsonKey gives it, because that is the key the $expand injection writes; a
+    // structural property gets the contract key only, so a policy key another member owns cannot
+    // keep that member.
     internal static HashSet<string> ResolveSelectedJsonKeys(
-        IReadOnlyList<string> edmNames, IEnumerable<Type> clrTypes, JsonSerializerOptions? serializerOptions)
+        IReadOnlyList<string> edmNames, IEnumerable<Type> clrTypes, JsonSerializerOptions? serializerOptions,
+        Func<string, bool>? isNavigation = null)
     {
         JsonSerializerOptions options = serializerOptions ?? OhDataEndpointFactory._pascalCaseSerializerOptions;
         var keys = new HashSet<string>(StringComparer.Ordinal);
@@ -2111,11 +2118,24 @@ internal static class ExpandEngine
             foreach (Type t in clrTypes)
             {
                 if (!ODataPropertyNaming.TryResolveEdmName(t, edmName, out PropertyInfo? prop) || prop is null) continue;
-                keys.Add(ResolveNavigationJsonKey(prop.Name, prop, options));
+                if (isNavigation?.Invoke(edmName) == true) keys.Add(ResolveNavigationJsonKey(prop.Name, prop, options));
                 if (ContractNames(t, options).TryGetValue(prop.Name, out string? contractKey)) keys.Add(contractKey);
             }
         }
         return keys;
+    }
+
+    // Whether the EDM name <paramref name="edmName"/> in an engaged expand's nested $select is a
+    // navigation: one of its pushed children or, for $levels, the self-navigation it repeats.
+    private static bool IsEngagedChildNav(EngagedExpand e, string edmName)
+    {
+        if (e.Levels > 0 && ODataPropertyNaming.ResolveEdmName(e.Binding.Property) == edmName) return true;
+        if (e.Children is null) return false;
+        foreach (EngagedExpand child in e.Children)
+        {
+            if (ODataPropertyNaming.ResolveEdmName(child.Binding.Property) == edmName) return true;
+        }
+        return false;
     }
 
     // The distinct runtime types of <paramref name="items"/> plus an optional declared type, so a
@@ -3535,7 +3555,8 @@ internal static class ExpandEngine
 
             HashSet<string>? nestedKeys = e.NestedSelect is null
                 ? null
-                : ResolveSelectedJsonKeys(e.NestedSelect, new[] { e.Binding.ElementType }, serializerOptions);
+                : ResolveSelectedJsonKeys(
+                    e.NestedSelect, new[] { e.Binding.ElementType }, serializerOptions, n => IsEngagedChildNav(e, n));
 
             PropertyInfo prop = e.Binding.Property;
             string key = ResolveNavigationJsonKey(prop.Name, prop, serializerOptions);
@@ -4040,7 +4061,8 @@ internal static class ExpandEngine
         if (e.NestedSelect is not null)
         {
             StripToSelectedProperties(
-                next, ResolveSelectedJsonKeys(e.NestedSelect, new[] { e.Binding.ElementType }, serializerOptions));
+                next, ResolveSelectedJsonKeys(
+                    e.NestedSelect, new[] { e.Binding.ElementType }, serializerOptions, n => IsEngagedChildNav(e, n)));
         }
     }
 

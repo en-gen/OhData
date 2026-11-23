@@ -2856,7 +2856,7 @@ internal static class OhDataEndpointFactory
 
             HashSet<string> selectedKeys = ExpandEngine.ResolveSelectedJsonKeys(
                 selectedProps,
-                navItemType is not null ? new[] { navItemType } : ExpandEngine.RuntimeTypesOf(itemArray, null),
+                ExpandEngine.RuntimeTypesOf(itemArray, navItemType),
                 navSerializerOptions);
             foreach (JsonObject obj in json.OfType<JsonObject>())
             {
@@ -2949,7 +2949,8 @@ internal static class OhDataEndpointFactory
         if (selectedProps is { Count: > 0 })
         {
             HashSet<string> selectedKeys = ExpandEngine.ResolveSelectedJsonKeys(
-                selectedProps, new[] { entity.GetType() }, jsonOptions ?? _pascalCaseSerializerOptions);
+                selectedProps, new[] { entity.GetType() }, jsonOptions ?? _pascalCaseSerializerOptions,
+                n => omitNavsForType?.FindProperty(n) is IEdmNavigationProperty);
             var toRemove = node.Select(p => p.Key)
                              .Where(k => !k.StartsWith("@", StringComparison.Ordinal) &&
                                          !selectedKeys.Contains(k))
