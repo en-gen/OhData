@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# CodeRabbit is the approving reviewer on develop (docs/agents/orchestrator.md
+# CodeRabbit is the approving reviewer on develop (docs/agents/operating-model.md
 # "Merging"): it approves once its comments are resolved, and a PR with
 # auto-merge on then merges on green CI. Assertive, because for most PRs it is
 # the only reviewer. Each instruction restates a rule in CLAUDE.md or
@@ -111,7 +111,7 @@ reviews:
     - path: '{.claude,docs/agents}/**'
       instructions: >-
         Operational instructions for agents. Flag contradictions with
-        CLAUDE.md or docs/agents/orchestrator.md, and any rule telling an
+        CLAUDE.md or docs/agents/operating-model.md, and any rule telling an
         agent to merge, force-push, git stash, or add AI attribution.
 chat:
   auto_reply: true
