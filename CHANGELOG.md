@@ -89,6 +89,10 @@ status codes or headers.
       `Warning`: the coarse half still gates the route, only the narrowing is lost. Remedy for
       either: declare the operation with `BindEntityFunction`/`BindEntityAction`, or scope the rule
       with `Invoke("Name", …)` to the operations that carry a key.
+- [ ] **An upsert `PUT` (`AllowUpsert`) to a missing key needs the collection `POST` permissions too**
+      (#795). The create branch used to run under the Update rule alone; it now also answers `401` or
+      `403` where the `POST` would. Grant intended upsert creators the Create rule, any group-level
+      policy and the fallback policy that apply to the `POST`.
 
 #### 4. Nothing to do
 
@@ -598,6 +602,19 @@ status codes or headers.
   packages (OpenApi, NSwag, Swashbuckle) already read `OhDataQueryOptionsMetadata` by property
   (`.TopSkipSupported`, `.FilterEnabled`, …), never through either obsolete overload, so nothing in
   this repo needed to change beyond the four removals.
+
+- **⚠ BREAKING CHANGE — an upsert `PUT` authorizes its create branch like the collection `POST`
+  (#795, security).** With `AllowUpsert`, a `PUT` to a missing key ran the `Post` handler under the
+  Update rule alone, so a caller holding Update but not Create got `201 Created`, and an
+  `AllowAnonymous()` Update rule also bypassed group-level `RequireAuthorization` and the fallback
+  policy. The create branch now evaluates the collection `POST` endpoint's authorization (group,
+  fallback policy, Create rule, through the host's `IAuthorizationMiddlewareResultHandler`, with the
+  `POST` endpoint on the `HttpContext` while it runs) and the Create `.RequireResource()` check
+  against the incoming model before `Post`. A caller who relied on Update alone to create now gets
+  `401` or `403`, as the `POST` answers. **Remedy: grant every intended upsert creator the collection
+  `POST` permissions** — the Create rule and `.RequireResource()` check, plus any group-level
+  `RequireAuthorization` policy and fallback policy that apply to the `POST`. `PUT` to an existing
+  key is unchanged.
 
 
 ### Added
