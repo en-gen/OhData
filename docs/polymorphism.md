@@ -70,7 +70,11 @@ vanish. Were the projection composed anyway, `GET /Things` would emit
 have materialized the derived type even if the projection had wanted to.
 
 So a **polymorphic root is refused the projection** and served through EF Core's `Include` instead,
-which loads real entities and preserves each row's runtime type. That is invisible from the outside
+which loads real entities and preserves each row's runtime type. The same holds when the polymorphic
+type is an **expanded target** at any depth, reached from a non-polymorphic root: a request whose
+expand tree touches one leaves the projection as a whole (the plain navigations in that request ride
+the same `Include` statement), and a derived child keeps its own members and `@odata.type`. A request
+with no polymorphic target keeps the single projected statement. That is invisible from the outside
 except in the ways below.
 
 ### What works

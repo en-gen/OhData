@@ -807,6 +807,14 @@ status codes or headers.
 
 ### Fixed
 
+- **`$expand` over a polymorphic navigation target dropped the derived members and `@odata.type` (#740).**
+  A non-polymorphic entity expanding a navigation whose target is a TPH hierarchy rebuilt each child as the
+  declared type, so a derived child lost its own properties and its `@odata.type` under a `200`, where the
+  same row from its own entity set kept both (#529 fixed the root only). A request whose expand reaches a
+  polymorphic target at any depth is now served through EF Core `Include`/`ThenInclude`; requests with no
+  polymorphic target keep the projected single statement. `$levels` under a polymorphic target answers the
+  #529 `400`. The Include path's `ThenInclude` also picks its overload by the previous navigation's shape, so a
+  reference navigation with a nested collection (and the reverse) no longer answers `500` (#900).
 - **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
   they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`

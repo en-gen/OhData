@@ -67,6 +67,9 @@ public static class Program
             // ODataQueryOptions, differing only in whether the ODataQueryContext is shared (the
             // pre-fix shape, which raced) or built per request (the shipped, correct one).
             typeof(QueryContextConstructionBenchmarks),
+            // #740: both arms are OhData; compares an expand over a TPH target (Include path) with a
+            // non-polymorphic target (member-init pushdown).
+            typeof(PolymorphicExpandBenchmarks),
         }).Run(switcherArgs);
         return 0;
     }
