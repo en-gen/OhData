@@ -604,8 +604,7 @@ internal static class ExpandEngine
                     && (expandItem.SkipOption is not null || expandItem.TopOption is not null)
                     && relatedByIndex[i] is System.Collections.IEnumerable windowSeq)
                 {
-                    var all = new List<object?>();
-                    foreach (object? o in windowSeq) all.Add(o);
+                    List<object?> all = windowSeq.Cast<object?>().ToList();
                     preWindowCount = all.Count;
                     int skip = expandItem.SkipOption is long dsk && dsk > 0 ? (int)Math.Min(dsk, all.Count) : 0;
                     int end = expandItem.TopOption is long dtp
@@ -620,13 +619,8 @@ internal static class ExpandEngine
                     relatedByIndex[i], targetEdmType, registration.EdmModel, nestedClause, serializerOptions,
                     isCollectionValue: isCollectionNav);
 
-                // #650: a nested $count IS answerable here, unlike $filter/$orderby/$top above, so it
-                // is implemented rather than refused — refusing something free would be gratuitous.
-                // Honest because the delegate's answer is not windowed: nothing between it and here
-                // truncates (the $top/$skip rejection above is what guarantees that), so this array
-                // IS the full related collection and its length IS the count. Contrast the pushdown
-                // path, where materialization is capped at MaxExpandTop + 1 and WriteNestedCountAndWindow
-                // must call EnsureWithinExpandCeiling before it can trust the number.
+                // #650: a nested $count is answerable here. It is the pre-window count (#736 takes it
+                // above), else the length of the serialized array, which nothing has truncated.
                 if (isCollectionNav && expandItem.CountOption == true
                     && (preWindowCount is not null || jsonItems[i][expandKey] is JsonArray))
                 {
