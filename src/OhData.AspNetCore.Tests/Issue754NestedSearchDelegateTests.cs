@@ -48,6 +48,7 @@ public sealed class Issue754NestedSearchDelegateTests
     private static readonly Counter s_byId = new();
     private static readonly Counter s_getAll = new();
     private static readonly Counter s_priorityOne = new();
+    private static readonly Counter s_nodeQueryable = new();
 
     private static void AssertNoHandlerReached()
     {
@@ -56,6 +57,7 @@ public sealed class Issue754NestedSearchDelegateTests
         Assert.Equal(0, s_byId.Count);
         Assert.Equal(0, s_getAll.Count);
         Assert.Equal(0, s_priorityOne.Count);
+        Assert.Equal(0, s_nodeQueryable.Count);
     }
 
     private static Task<ILookup<int, N754Line>> Lines(IReadOnlyCollection<int> keys, CancellationToken ct)
@@ -113,7 +115,11 @@ public sealed class Issue754NestedSearchDelegateTests
                     s_delegate.Hit();
                     return Task.FromResult(keys.Select(k => new N754Node { Id = k + 100 }).ToLookup(n => n.Id - 100));
                 });
-            GetQueryable = () => new[] { new N754Node { Id = 1 } }.AsQueryable();
+            GetQueryable = () =>
+            {
+                s_nodeQueryable.Hit();
+                return new[] { new N754Node { Id = 1 } }.AsQueryable();
+            };
         }
     }
 
@@ -139,6 +145,7 @@ public sealed class Issue754NestedSearchDelegateTests
         s_byId.Reset();
         s_getAll.Reset();
         s_priorityOne.Reset();
+        s_nodeQueryable.Reset();
         return TestHostBuilder.BuildAsync(b =>
         {
             b.AddEntitySetProfile<QueryableProfile>();
@@ -175,6 +182,17 @@ public sealed class Issue754NestedSearchDelegateTests
 
         Assert.Equal(HttpStatusCode.NotImplemented, res.StatusCode);
         AssertNoHandlerReached();
+    }
+
+    [Fact]
+    public async Task ADepthTwoExpandWithoutSearch_ReachesTheNodeGetQueryable()
+    {
+        TestFixture fx = await HostAsync();
+
+        HttpResponseMessage res = await fx.Client.GetAsync("/odata/N754Nodes?$expand=Children($expand=Children)");
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Equal(1, s_nodeQueryable.Count);
     }
 
     [Fact]

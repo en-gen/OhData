@@ -4078,7 +4078,7 @@ internal static class OhDataEndpointFactory
                         options.SelectExpand?.SelectExpandClause, source.MaxExpandBreadth, source.MaxExpansionDepth);
                     if (breadthError is not null) return breadthError;
 
-                    // Source acquisition comes after every gate, so a refused request never reaches the handler.
+                    // The nested-$search gate above runs before the handler, so a refused request never reaches it.
                     var s = ResolveHandlers(ctx);
                     var queryable = (IQueryable<TModel>)(await AsHandlerFault(WithExceptionMapping(s.InvokeGetQueryableAsync(ct), source, ctx, OhDataOperation.Read)))
                                     .Cast<TModel>();
