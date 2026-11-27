@@ -548,8 +548,9 @@ internal static class QueryOptionGate
     // $top/$skip are listed UNCONDITIONALLY, not off ReturnType the way TopSkipSupported is, and the
     // asymmetry is deliberate: the bound is applied in the RUNTIME collection branch, so such a route
     // really can emit a $skip continuation, and deriving the set from the declared type would make
-    // the server refuse a link it had just issued. Where the result is not a collection they are
-    // accepted no-ops -- the same answer the /$count routes give, reached by a different road.
+    // the server refuse a link it had just issued. On an action the values are validated before the
+    // handler when the declared return type can hold a collection (object, an interface, an
+    // IEnumerable); void, scalar and single-entity returns accept them as no-ops -- the same answer the /$count routes give, reached by a different road.
     internal static readonly string[] s_boundOperationImplementedOptions =
     {
         "$top", "$skip", FormatOption,

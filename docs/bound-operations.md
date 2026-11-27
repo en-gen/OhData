@@ -258,8 +258,9 @@ Three things worth knowing:
 - **`$top`/`$skip` are listed unconditionally**, not derived from the declared return type. The
   `MaxTop` ceiling is applied to whatever the handler returns at runtime, so a handler declared
   `Task<object>` really can produce a `$skip=N` continuation — and refusing the option would mean
-  refusing a link the server itself had just issued. Where the result is not a collection they are
-  accepted no-ops. On an **unbound** operation there is no collection branch and no continuation,
+  refusing a link the server itself had just issued. On an action the values are validated before the
+  handler when its declared return type can hold a collection (`object`, any interface, any
+  `IEnumerable`); a void, scalar or single-entity action accepts them as no-ops. On an **unbound** operation there is no collection branch and no continuation,
   so they are refused.
 - **The gate runs before parameter binding and before the handler delegate**, so a refused
   **action** invocation provably mutates nothing.
