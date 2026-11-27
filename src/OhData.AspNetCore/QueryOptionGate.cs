@@ -549,8 +549,8 @@ internal static class QueryOptionGate
     // asymmetry is deliberate: the bound is applied in the RUNTIME collection branch, so such a route
     // really can emit a $skip continuation, and deriving the set from the declared type would make
     // the server refuse a link it had just issued. On an action the values are validated before the
-    // handler when the declared return type can hold a collection (object, an interface, an
-    // IEnumerable); void, scalar and single-entity returns accept them as no-ops -- the same answer the /$count routes give, reached by a different road.
+    // handler when the declared return type can hold a collection of the set's own type (a collection
+    // of TModel, object, a non-sealed class or interface); other returns accept them as no-ops -- the same answer the /$count routes give, reached by a different road.
     internal static readonly string[] s_boundOperationImplementedOptions =
     {
         "$top", "$skip", FormatOption,

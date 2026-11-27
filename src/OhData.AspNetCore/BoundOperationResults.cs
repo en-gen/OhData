@@ -93,13 +93,18 @@ internal static class BoundOperationResults
 
     // #786: whether an action's result can reach the runtime collection branch, the only place
     // $top/$skip mean anything. A void/Task, scalar or single-entity action keeps accepting them as
-    // no-ops; object, any interface and any IEnumerable type can hold a collection and are
-    // validated up front.
-    internal static bool MayReturnCollection(BoundOperationDefinition op) =>
-        op.ReturnType is { } t
-        && !t.IsValueType
-        && t != typeof(string)
-        && (t == typeof(object) || t.IsInterface || typeof(IEnumerable).IsAssignableFrom(t));
+    // no-ops. It is validated up front exactly when the declared type can hold an IEnumerable<X>
+    // with X assignable to TModel, the shape the runtime branch pages: a declared collection of
+    // TModel (also a struct or Nullable one), object, or a non-sealed class or interface that a
+    // List<TModel> or TModel[] can be assigned to.
+    internal static bool MayReturnCollectionOf<TModel>(BoundOperationDefinition op) where TModel : class
+    {
+        if (op.ReturnType is not { } t) return false;
+        Type u = Nullable.GetUnderlyingType(t) ?? t;
+        if (DeclaresCollectionOf(u, typeof(TModel)) || t == typeof(object)) return true;
+        return (t.IsInterface || (t.IsClass && !t.IsSealed))
+            && (t.IsAssignableFrom(typeof(List<TModel>)) || t.IsAssignableFrom(typeof(TModel[])));
+    }
 
     // #357/#467: a bound operation whose DECLARED return type is a collection of the set's own type
     // honours $top/$skip and caps at MaxTop, so -- and only so -- its route documents them. Every
