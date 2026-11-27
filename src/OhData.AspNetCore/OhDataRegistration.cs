@@ -115,6 +115,12 @@ public sealed class OhDataRegistration
     /// </remarks>
     internal bool OpenTypesActive { get; set; }
 
+    // SPIKE #867 (prototype only, never shipped): switches for the streamed top-level collection GET.
+    internal bool StreamCollections { get; set; }
+    internal StreamErrorMode StreamErrorMode { get; set; }
+    internal int StreamChunkSize { get; set; } = 128;
+    internal long StreamedResponseCount;
+
     /// <summary>
     /// #398 stage 1: for each CLR model type, the <b>JSON</b> names of the members that
     /// <c>EntitySetProfile.Ignore(...)</c> withholds. Set once by

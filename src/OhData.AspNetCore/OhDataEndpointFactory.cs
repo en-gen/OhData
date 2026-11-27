@@ -3912,6 +3912,32 @@ internal static class OhDataEndpointFactory
                             ctx.Response.Headers["Preference-Applied"] = $"{MaxPageSizePreference}={appliedPageSize!.Value}";
                     }
 
+                    // SPIKE #867: streamed Priority-1 collection (prototype switch, default OFF). Blocked
+                    // for any $expand, and for $count=true without a profile TotalCount (the count would
+                    // be the row total, unknowable before the last row).
+                    if (registration.StreamCollections && !StreamingSpikeHelpers.HasExpand(options)
+                        && !(options.Count?.Value == true && odataResult.TotalCount is null))
+                    {
+                        IEnumerator<TModel> streamRows = queryable.GetEnumerator();
+                        int streamPageLimit = odataResult.NextLink is null && options.Top is null
+                            && appliedPageSize is int aps1 && aps1 > 0
+                            ? aps1 : int.MaxValue;
+                        string streamBase = BuildBaseUrl(ctx, prefix);
+                        int streamSkip = frameworkSkip;
+                        return await StreamedCollectionResult<TModel>.PrepareAsync(
+                            streamRows, streamPageLimit, registration,
+                            read => QueryOptionGate.EvaluateQueryWithArithmeticFaultGuard(
+                                read, options, logger, source.EntitySetName),
+                            chunk => ExpandEngine.ApplyCollectionPipelineAsync(
+                                chunk, options, source, s, jsonOptions, rootEdmType, registration,
+                                ctx.RequestServices, ct),
+                            EnvelopeOptions(jsonOptions ?? _pascalCaseSerializerOptions),
+                            options.Count?.Value == true ? odataResult.TotalCount : null,
+                            odataResult.NextLink,
+                            () => BuildFrameworkSkipLink(ctx, streamSkip + streamPageLimit),
+                            sel => $"{streamBase}/$metadata#{AppendSelectSuffix(name, sel)}");
+                    }
+
                     // #662 does not reclassify here: the profile applied the options itself, so
                     // the framework composed nothing it could attribute a failure to.
                     object[] items = QueryOptionGate.EvaluateQueryWithArithmeticFaultGuard(
@@ -4330,6 +4356,32 @@ internal static class OhDataEndpointFactory
                     // Index-aligned with `items` below; re-indexed onto the serialized parents at the
                     // ShapePushedExpandsInJson call site.
                     Dictionary<PropertyInfo, int[]>? carrierCounts = null;
+
+                    // SPIKE #867: streamed top-level collection (prototype switch, default OFF). Any
+                    // $expand (engaged or not) keeps the buffered path -- see spike/NOTES.md.
+                    if (registration.StreamCollections && engagedExpandNavs is not { Count: > 0 }
+                        && !StreamingSpikeHelpers.HasExpand(options))
+                    {
+                        IEnumerator<TModel> streamRows = QueryOptionGate.OpenRootEnumerator(
+                            queryable, () => ApplySelectPushdown(filtered),
+                            (ODataQueryOptions<TModel>)options, logger, source.EntitySetName);
+                        int streamPageLimit = appliedPageSize is int aps0 && aps0 > 0 && options.Top is null
+                            ? aps0 : int.MaxValue;
+                        string streamBase = BuildBaseUrl(ctx, prefix);
+                        int streamSkip = effectiveSkip;
+                        return await StreamedCollectionResult<TModel>.PrepareAsync(
+                            streamRows, streamPageLimit, registration,
+                            read => QueryOptionGate.EvaluateQueryWithArithmeticFaultGuard(
+                                read, (ODataQueryOptions<TModel>)options, logger, source.EntitySetName),
+                            chunk => ExpandEngine.ApplyCollectionPipelineAsync(
+                                chunk, options, source, s, jsonOptions, rootEdmType, registration,
+                                ctx.RequestServices, ct),
+                            EnvelopeOptions(jsonOptions ?? _pascalCaseSerializerOptions),
+                            odataCount, null,
+                            () => BuildNextPageLink(ctx, Convert.ToBase64String(
+                                BitConverter.GetBytes(streamSkip + streamPageLimit))),
+                            sel => $"{streamBase}/$metadata#{AppendSelectSuffix(name, sel)}");
+                    }
 
                     TModel[] items;
                     if (engagedExpandNavs is { Count: > 0 })

@@ -156,6 +156,32 @@ internal static class QueryOptionGate
         }
     }
 
+    // SPIKE #867: the streaming counterpart of MaterializeRootQuery's translation window -- builds
+    // the query and opens its enumerator (GetEnumerator does no I/O on EF Core), classifying a
+    // translation failure exactly as MaterializeRootQuery does. Rows are pulled by the caller.
+    internal static IEnumerator<TModel> OpenRootEnumerator<TModel>(
+        IQueryable<TModel> source, Func<IQueryable<TModel>> build,
+        ODataQueryOptions<TModel> options, ILogger? logger, string entitySetName)
+    {
+        try
+        {
+            try
+            {
+                return build().GetEnumerator();
+            }
+            catch (Exception ex) when (IsTranslationCandidate(ex))
+            {
+                throw new QueryTranslationFailedException(ex);
+            }
+        }
+        catch (QueryTranslationFailedException ex)
+        {
+            if (ComposedOptionPhrase(options) is not { } blamed || !SourceCompilesOnEfCore(source)) throw;
+
+            throw RootTranslationFailure(ex.InnerException ?? ex, blamed, logger, entitySetName);
+        }
+    }
+
     /// <summary>
     /// Counts a ROOT query, answering <c>400</c> for the same condition (#662).
     /// </summary>
