@@ -151,6 +151,48 @@ internal static class BoundOperationResults
         return new OhDataQueryParametersMetadata { Parameters = list };
     }
 
+    // #786: the $skip/$top/MaxTop parse and validation, shared by the paging below and by the bound
+    // ACTION routes, which call it before the handler so a refused invocation mutates nothing.
+    internal static bool TryValidateOperationWindow(
+        HttpContext ctx, IEntitySetEndpointSource startupSource,
+        out int skip, out int? top, out IResult? error)
+    {
+        error = null;
+        top = null;
+        skip = 0;
+        if (ctx.Request.Query.TryGetValue("$skip", out var skipStr))
+        {
+            if (!int.TryParse(skipStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out skip) || skip < 0)
+            {
+                error = OhDataEndpointFactory.ODataError(400, "InvalidQueryOption",
+                    $"The value of '$skip' ('{skipStr}') is invalid. It must be a non-negative integer.");
+                return false;
+            }
+        }
+
+        if (ctx.Request.Query.TryGetValue("$top", out var topStr))
+        {
+            if (!int.TryParse(topStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int topVal) || topVal < 0)
+            {
+                error = OhDataEndpointFactory.ODataError(400, "InvalidQueryOption",
+                    $"The value of '$top' ('{topStr}') is invalid. It must be a non-negative integer.");
+                return false;
+            }
+            top = topVal;
+
+            // MaxTop caps an EXPLICIT $top exactly as the three collection read paths do, with the
+            // identical message.
+            if (startupSource.MaxTop.HasValue && topVal > startupSource.MaxTop.Value)
+            {
+                error = OhDataEndpointFactory.ODataError(400, "InvalidQueryOption",
+                    $"The value of '$top' ({topVal}) exceeds the maximum allowed value ({startupSource.MaxTop.Value}).");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     // Wraps a bound-operation result in @odata.context when the return type matches TModel (§11.5.3);
     // primitives and other types return directly.
     //
@@ -174,37 +216,8 @@ internal static class BoundOperationResults
         nextLink = null;
         error = null;
 
-        int skip = 0;
-        if (ctx.Request.Query.TryGetValue("$skip", out var skipStr))
-        {
-            if (!int.TryParse(skipStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out skip) || skip < 0)
-            {
-                error = OhDataEndpointFactory.ODataError(400, "InvalidQueryOption",
-                    $"The value of '$skip' ('{skipStr}') is invalid. It must be a non-negative integer.");
-                return false;
-            }
-        }
-
-        int? top = null;
-        if (ctx.Request.Query.TryGetValue("$top", out var topStr))
-        {
-            if (!int.TryParse(topStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int topVal) || topVal < 0)
-            {
-                error = OhDataEndpointFactory.ODataError(400, "InvalidQueryOption",
-                    $"The value of '$top' ('{topStr}') is invalid. It must be a non-negative integer.");
-                return false;
-            }
-            top = topVal;
-
-            // MaxTop caps an EXPLICIT $top exactly as the three collection read paths do, with the
-            // identical message.
-            if (startupSource.MaxTop.HasValue && topVal > startupSource.MaxTop.Value)
-            {
-                error = OhDataEndpointFactory.ODataError(400, "InvalidQueryOption",
-                    $"The value of '$top' ({topVal}) exceeds the maximum allowed value ({startupSource.MaxTop.Value}).");
-                return false;
-            }
-        }
+        if (!TryValidateOperationWindow(ctx, startupSource, out int skip, out int? top, out error))
+            return false;
 
         long preTotal = items.Length;
         IEnumerable<object> seq = items;

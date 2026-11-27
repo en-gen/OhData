@@ -214,6 +214,9 @@ A **bound action** whose result is a collection of the entity set's own type hon
 | `MaxTop = null` | no ceiling — the full collection in one response |
 | `Prefer: maxpagesize` | **not honoured**, and no `Preference-Applied` is emitted |
 
+A malformed `$top`/`$skip` or a `$top` above `MaxTop` is refused **before the action runs**, so the
+`400` never follows a side effect (a caller the route's authorization refuses still gets `401`/`403`).
+
 **Why a refusal and not a page.** A `@odata.nextLink` is a URL the client **GETs** (Protocol
 §11.2.5.7), and an action is invoked by `POST` to its action URL (§11.5.4.1) — so there is no
 GET-addressable continuation of an action invocation for a link to point at. A continuation link

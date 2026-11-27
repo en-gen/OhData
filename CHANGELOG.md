@@ -807,6 +807,12 @@ status codes or headers.
 
 ### Fixed
 
+- **A bound action validated `$top`/`$skip` after it had run (#786).** `POST /Set/Action?$top=abc` (and `-1`, a
+  `$top` above `MaxTop`, a malformed `$skip`) executed the handler and only then answered `400 InvalidQueryOption`,
+  so a client that reads a 4xx as "not processed" could retry an action whose side effects had happened. The
+  window is now validated before the handler, with the same messages, on collection-bound and entity-bound actions;
+  an unauthorized caller still gets `401`/`403` first. Fixes #786.
+
 - **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
   they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`
