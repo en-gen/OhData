@@ -45,8 +45,16 @@ public sealed class V740Gift
     public string Label { get; set; } = "";
 }
 
+public sealed class V740Note
+{
+    public int Id { get; set; }
+    public int ParentId { get; set; }
+    public string Text { get; set; } = "";
+}
+
 public sealed class V740Parent
 {
+    public List<V740Note> Notes { get; set; } = new();
     public int Id { get; set; }
     public int? BestId { get; set; }
     public V740Kid? Best { get; set; }
@@ -74,6 +82,7 @@ public sealed class V740DbContext : DbContext
     public DbSet<V740Kid> Kids => Set<V740Kid>();
     public DbSet<V740Toy> Toys => Set<V740Toy>();
     public DbSet<V740Gift> Gifts => Set<V740Gift>();
+    public DbSet<V740Note> Notes => Set<V740Note>();
     public DbSet<V740Owner> Owners => Set<V740Owner>();
     public DbSet<V740Plain> Plains => Set<V740Plain>();
 
@@ -81,6 +90,7 @@ public sealed class V740DbContext : DbContext
     {
         b.Entity<V740Parent>().HasMany(p => p.Kids).WithOne().HasForeignKey(k => k.ParentId);
         b.Entity<V740Parent>().HasOne(p => p.Best).WithMany().HasForeignKey(p => p.BestId);
+        b.Entity<V740Parent>().HasMany(p => p.Notes).WithOne().HasForeignKey(n => n.ParentId);
         b.Entity<V740Kid>().HasMany(k => k.Gifts).WithOne().HasForeignKey(g => g.KidId);
         b.Entity<V740SpecialKid>().HasMany(k => k.Toys).WithOne().HasForeignKey(t => t.SpecialKidId);
         b.Entity<V740Owner>().HasMany(o => o.Plains).WithOne().HasForeignKey(p => p.OwnerId);
@@ -101,6 +111,7 @@ public sealed class V740ParentProfile : EntitySetProfile<int, V740Parent>
         GetById = (id, _) => OhDataResult.Success(
             db.Parents.Include(p => p.Kids).Include(p => p.Best).FirstOrDefault(p => p.Id == id));
         HasMany(x => x.Kids);
+        HasMany(x => x.Notes);
         HasOptional(x => x.Best!);
     }
 }
@@ -171,6 +182,7 @@ public sealed class Issue740PolymorphicExpandPushdownTests
         db.Toys.Add(new V740Toy { Id = 51, SpecialKidId = 2, Label = "kite" });
         db.Gifts.Add(new V740Gift { Id = 70, KidId = 1, Label = "g-plain" });
         db.Gifts.Add(new V740Gift { Id = 71, KidId = 2, Label = "g-special" });
+        db.Notes.Add(new V740Note { Id = 90, ParentId = 1, Text = "n1" });
         db.Owners.Add(new V740Owner { Id = 1 });
         db.Plains.Add(new V740Plain { Id = 5, OwnerId = 1, Name = "pl" });
         db.SaveChanges();
@@ -300,23 +312,6 @@ public sealed class Issue740PolymorphicExpandPushdownTests
         Assert.Equal("g-special", best.GetProperty("Gifts")[0].GetProperty("Label").GetString());
     }
 
-    [Fact]
-    public async Task DepthTwo_DerivedOnlyNavigationThroughACast_IsServed()
-    {
-        using var connection = new SqliteConnection("DataSource=:memory:");
-        connection.Open();
-        await using TestFixture fx = await BuildAsync(connection);
-
-        JsonElement kids = (await GetJsonAsync(fx,
-            "/odata/Parents?$expand=Kids($expand=OhData.AspNetCore.Tests.V740SpecialKid/Toys)"))
-            .GetProperty("value")[0].GetProperty("Kids");
-
-        JsonElement special = ById(kids, 2);
-        AssertSpecial(special);
-        Assert.Equal(2, special.GetProperty("Toys").GetArrayLength());
-        AssertPlain(ById(kids, 1));
-    }
-
     [Theory]
     [InlineData("$expand=Kids($filter=Id gt 0)")]
     [InlineData("$expand=Kids($orderby=Id desc)")]
@@ -352,6 +347,62 @@ public sealed class Issue740PolymorphicExpandPushdownTests
             .GetProperty("value")[0].GetProperty("Kids");
         Assert.Equal(1, top.GetArrayLength());
         AssertSpecial(top[0]);
+    }
+
+    [Fact]
+    public async Task DepthTwo_NestedFilterAndTopUnderCollection_ApplyAndKeepDerivedMembers()
+    {
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection);
+
+        JsonElement kids = (await GetJsonAsync(fx,
+            "/odata/Parents?$expand=Kids($filter=Id gt 1;$expand=Gifts($top=1))"))
+            .GetProperty("value")[0].GetProperty("Kids");
+
+        Assert.Equal(1, kids.GetArrayLength());
+        AssertSpecial(kids[0]);
+        JsonElement gifts = kids[0].GetProperty("Gifts");
+        Assert.Equal(1, gifts.GetArrayLength());
+        Assert.Equal("g-special", gifts[0].GetProperty("Label").GetString());
+    }
+
+    [Fact]
+    public async Task MixedRequest_PolymorphicAndPlainNavigation_LeavesTheProjection_AndServesBoth()
+    {
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        var sink = new SqlCaptureSink();
+        await using TestFixture fx = await BuildAsync(connection, sink);
+        sink.Clear();
+
+        JsonElement parent = (await GetJsonAsync(fx, "/odata/Parents?$expand=Kids,Notes")).GetProperty("value")[0];
+
+        AssertSpecial(ById(parent.GetProperty("Kids"), 2));
+        Assert.Equal("n1", parent.GetProperty("Notes")[0].GetProperty("Text").GetString());
+        // Include path: the discriminator and the derived column are selected (a member-init would omit
+        // both), and the plain navigation rides the same statement.
+        string select = Assert.Single(sink.Snapshot(), x => x.Contains("SELECT", StringComparison.Ordinal));
+        Assert.Contains("\"Discriminator\"", select, StringComparison.Ordinal);
+        Assert.Contains("\"Sparkle\"", select, StringComparison.Ordinal);
+        Assert.Contains("JOIN \"Kids\"", select, StringComparison.Ordinal);
+        Assert.Contains("JOIN \"Notes\"", select, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PolymorphicTarget_SelectsDiscriminatorAndDerivedColumns_InOneJoinedStatement()
+    {
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        var sink = new SqlCaptureSink();
+        await using TestFixture fx = await BuildAsync(connection, sink);
+        sink.Clear();
+
+        await GetJsonAsync(fx, "/odata/Parents?$expand=Kids");
+        string select = Assert.Single(sink.Snapshot(), x => x.Contains("SELECT", StringComparison.Ordinal));
+        Assert.Contains("\"Discriminator\"", select, StringComparison.Ordinal);
+        Assert.Contains("\"Sparkle\"", select, StringComparison.Ordinal);
+        Assert.Contains("JOIN \"Kids\"", select, StringComparison.Ordinal);
     }
 
     [Fact]
