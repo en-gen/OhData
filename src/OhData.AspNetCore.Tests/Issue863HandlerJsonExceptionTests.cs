@@ -57,15 +57,14 @@ public class Issue863HandlerJsonExceptionTests
 
     private static void Reset() => Array.Clear(Issue863Profile.Calls);
 
-    private static async Task<(string Code, string Body)> AssertServerFault(HttpResponseMessage response, string handlerMessage)
+    private static async Task<string> AssertServerFault(HttpResponseMessage response, string handlerMessage)
     {
         string body = await response.Content.ReadAsStringAsync();
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
         using var doc = JsonDocument.Parse(body);
-        string code = doc.RootElement.GetProperty("error").GetProperty("code").GetString() ?? "";
-        Assert.Equal("InternalServerError", code);
+        Assert.Equal("InternalServerError", doc.RootElement.GetProperty("error").GetProperty("code").GetString());
         Assert.DoesNotContain(handlerMessage, body);
-        return (code, body);
+        return body;
     }
 
     public static TheoryData<string?> Policies => new() { null, "snake", "kebab" };
@@ -128,11 +127,11 @@ public class Issue863HandlerJsonExceptionTests
         var put = await fx.Client.PutAsync("/odata/Issue863Items(1)", Json("{\"id\":1,\"name\":\"x\"}"));
         var patch = await fx.Client.PatchAsync("/odata/Issue863Items(1)", Json("{\"name\":\"x\"}"));
 
-        var postFault = await AssertServerFault(post, Issue863Profile.PostMessage);
+        string postBody = await AssertServerFault(post, Issue863Profile.PostMessage);
         Assert.Equal(2, Issue863Profile.Calls[0]); // collection POST and the upsert create
-        Assert.Equal(postFault.Body, (await AssertServerFault(putCreate, Issue863Profile.PostMessage)).Body);
-        Assert.Equal(postFault.Body, (await AssertServerFault(put, Issue863Profile.PutMessage)).Body);
-        Assert.Equal(postFault.Body, (await AssertServerFault(patch, Issue863Profile.PatchMessage)).Body);
+        Assert.Equal(postBody, await AssertServerFault(putCreate, Issue863Profile.PostMessage));
+        Assert.Equal(postBody, await AssertServerFault(put, Issue863Profile.PutMessage));
+        Assert.Equal(postBody, await AssertServerFault(patch, Issue863Profile.PatchMessage));
     }
 
     [Theory]
