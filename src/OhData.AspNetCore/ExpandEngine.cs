@@ -2305,6 +2305,20 @@ internal static class ExpandEngine
             return false;
         }
 
+        // #740: the same refusal one level down. A member-init rebuilds a TPH-derived EXPANDED child as
+        // its declared type (derived members and @odata.type lost), at any depth, so a request whose
+        // expand reaches a polymorphic target leaves the projection and takes the Include path.
+        if (edmModel is not null && expandNavs is not null && ReachesPolymorphicTarget(expandNavs, edmModel))
+        {
+            ineligibilityReason =
+                "an expanded navigation targets a type with derived types in the EDM, and a member-init " +
+                "projection can only construct the declared type";
+            logger?.LogDebug(
+                "OhData: pushdown projection skipped for {EntitySet}: an expanded navigation targets a polymorphic type.",
+                source.EntitySetName);
+            return false;
+        }
+
         // Selected names can include expanded-navigation identifiers (ExtractSelectedProperties
         // keeps them for the JSON trim); those are not structural and are skipped here —
         // expansion loads via delegates correlated by the always-projected key. Nested $select
@@ -2850,14 +2864,21 @@ internal static class ExpandEngine
             return false;
         });
 
+    private static bool ReachesPolymorphicTarget(IReadOnlyList<EngagedExpand> navs, IEdmModel model)
+    {
+        foreach (EngagedExpand nav in navs)
+        {
+            if (HasDerivedEntityTypes(model, nav.Binding.ElementType)) return true;
+            if (nav.Children is { Count: > 0 } kids && ReachesPolymorphicTarget(kids, model)) return true;
+        }
+        return false;
+    }
+
     private static bool IsMemberInitProjectable(Type elementType, IEdmModel model) =>
         s_memberInitProjectableCache.GetOrAdd((elementType, model), static key =>
         {
             (Type elementType, IEdmModel model) = key;
             if (elementType.GetConstructor(Type.EmptyTypes) is null) return false;
-            // #740 (same defect as #529, one level down): a member-init rebuilds a TPH-derived child as the
-            // declared type, dropping derived members and @odata.type, so a polymorphic target is not projectable.
-            if (HasDerivedEntityTypes(model, elementType)) return false;
             // #508: EdmClrTypeMap, not model.FindDeclaredType(elementType.FullName) — the latter
             // matches on the EDM type's full name, so on a renamed schema it answered null for every
             // element type, this method answered false for every element type, and TryBuildEngagedExpand
