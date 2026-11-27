@@ -5569,10 +5569,11 @@ internal static class OhDataEndpointFactory
             {
                 logger?.LogDebug("PUT {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
                 if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
-                bool authorizingCreate = false;
+                // True while user code (handlers, create-auth policies) runs: its JsonException is a server fault.
+                bool runningUserCode = false;
+                var s = ResolveHandlers(ctx);
                 try
                 {
-                    var s = ResolveHandlers(ctx);
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                     TModel? model;
 
@@ -5703,6 +5704,8 @@ internal static class OhDataEndpointFactory
                         ValidateEdmRequiredProperties(edmRequiredProps, model, bodyRequiredNamed);
                     if (putNullabilityFail is not null) return putNullabilityFail;
 
+                    // The body is fully parsed; everything below is user or server code.
+                    runningUserCode = true;
                     string bodyKeyStr = s.InvokeGetKeyString(model);
                     string parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
                     if (!string.Equals(parsedKeyStr, bodyKeyStr, StringComparison.Ordinal))
@@ -5732,10 +5735,7 @@ internal static class OhDataEndpointFactory
                     bool wasCreated = false;
                     if (result is null && source.AllowUpsert && source.HasPost)
                     {
-                        // A JsonException from a policy handler is a server fault, not a malformed body.
-                        authorizingCreate = true;
                         IResult? upsertCreateAuthFail = await CheckUpsertCreateAuthAsync(ctx, model);
-                        authorizingCreate = false;
                         if (upsertCreateAuthFail is not null) return upsertCreateAuthFail;
                         result = await WithExceptionMapping(s.InvokePostAsync(model, ct), source, ctx, OhDataOperation.Create, model: model);
                         wasCreated = true;
@@ -5776,7 +5776,7 @@ internal static class OhDataEndpointFactory
                         return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, registration.EdmModel, odataId: odataId, etag: putEtag, omitNavsForType: rootEdmType));
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, registration.EdmModel, odataId: odataId, etag: putEtag, omitNavsForType: rootEdmType);
                 }
-                catch (JsonException ex) when (!authorizingCreate)
+                catch (JsonException ex) when (!runningUserCode)
                 {
                     return ODataError(400, "InvalidBody", ex.Message);
                 }
@@ -5800,9 +5800,10 @@ internal static class OhDataEndpointFactory
             {
                 logger?.LogDebug("PATCH {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
                 if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
+                bool runningUserCode = false;
+                var s = ResolveHandlers(ctx);
                 try
                 {
-                    var s = ResolveHandlers(ctx);
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                     var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                         ctx.Request.Body, jsonOptions, ct);
@@ -5870,7 +5871,10 @@ internal static class OhDataEndpointFactory
                     }
 
                     // ETag check via If-Match header -- handler owns fetch-for-merge.
+                    // User code (GetById, the ETag selector): its JsonException is a server fault.
+                    runningUserCode = true;
                     var etagCheck = await CheckETagAsync(source, s, ctx, parsedKey!, ct);
+                    runningUserCode = false;
                     if (etagCheck is not null) return etagCheck;
 
                     // Build Delta<TModel>: only properties present in the request body are set.
@@ -5924,6 +5928,8 @@ internal static class OhDataEndpointFactory
                     // #355: only the properties this body NAMED are in the delta, so this is exactly
                     // the "client explicitly sent null for a Nullable='false' property" case — a
                     // partial update that omits the property is untouched.
+                    // It reads model getters, so it runs as user code.
+                    runningUserCode = true;
                     IResult? patchNullabilityFail =
                         ValidateEdmRequiredDelta(edmRequiredProps, patchDelta);
                     if (patchNullabilityFail is not null) return patchNullabilityFail;
@@ -5955,7 +5961,7 @@ internal static class OhDataEndpointFactory
                     string odataId = BuildEntityId(ctx, prefix, name, parsedKey!);
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, registration.EdmModel, odataId: odataId, etag: patchEtag, omitNavsForType: rootEdmType);
                 }
-                catch (JsonException ex)
+                catch (JsonException ex) when (!runningUserCode)
                 {
                     return ODataError(400, "InvalidBody", ex.Message);
                 }

@@ -807,6 +807,12 @@ status codes or headers.
 
 ### Fixed
 
+- **A `JsonException` thrown by user code on `PUT` or `PATCH` answered `400 InvalidBody` and echoed its message (#863).**
+  The entity `PUT` and `PATCH` routes mapped every `JsonException`, including one raised by a scoped profile constructor or inside a `Put`, upsert-create `Post`,
+  `Patch` or `GetById` handler, the ETag selector or the response serializer, to a client error. Each now reaches the
+  unhandled-exception filter and answers the same generic `500` as the collection `POST`; only reading and binding the
+  request body answers `400 InvalidBody`.
+
 - **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
   they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`
