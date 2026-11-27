@@ -53,7 +53,7 @@ public class StreamingSpikeErrorProbeTests
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
-        builder.Services.AddOhData(o => { o.WithPrefix("/odata"); o.WithDefaults(d => d.MaxTop = null); o.AddEntitySetProfile<SpikeFaultProfile>(); });
+        builder.Services.AddOhData(o => { o.WithPrefix("/odata"); o.WithDefaults(d => d.MaxTop = null); o.AddEntitySetProfile<SpikeFaultProfile>(); o.AddEntitySetProfile<SpikeAllProfile>(); });
         var app = builder.Build();
         app.MapOhData();
         await app.StartAsync();
@@ -183,5 +183,23 @@ public class StreamingSpikeErrorProbeTests
 
         _output.WriteLine(o.ToString());
         Console.WriteLine("PROBE " + o);
+    }
+
+    // Framing on the wire (Kestrel): the byte-identity tests cannot see it because TestServer
+    // synthesizes Content-Length. Recorded in spike/NOTES.md.
+    [Fact]
+    public async Task Kestrel_FramingOfSuccessResponse_IsRecorded()
+    {
+        await using WebApplication app = await StartKestrelAsync();
+        OhDataRegistration reg = app.Services.GetRequiredService<OhDataRegistrationCollection>().Default;
+        using var client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+        foreach (bool stream in new[] { false, true })
+        {
+            reg.StreamCollections = stream;
+            Observation o = await ObserveAsync(client, "Kestrel", stream ? "streamed" : "buffered", "/odata/SpikeAll");
+            _output.WriteLine(o.ToString());
+            Console.WriteLine($"PROBE FRAMING stream={stream} status={o.Status} {o.Framing} bytes={o.BytesRead}");
+            Assert.Equal(200, o.Status);
+        }
     }
 }

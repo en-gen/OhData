@@ -126,6 +126,11 @@ internal sealed class StreamedCollectionResult<TModel> : IResult
             Encoder = _options.Encoder,
             Indented = _options.WriteIndented,
             MaxDepth = _options.MaxDepth,
+#if NET9_0_OR_GREATER
+            IndentCharacter = _options.IndentCharacter,
+            IndentSize = _options.IndentSize,
+            NewLine = _options.NewLine,
+#endif
         };
         var writer = new Utf8JsonWriter(response.BodyWriter, writerOptions);
         CancellationToken ct = httpContext.RequestAborted;

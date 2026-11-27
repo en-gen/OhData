@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using BenchmarkDotNet.Running;
 using OhData.Server.Benchmarks.Benchmarks;
 using OhData.Server.Benchmarks.Smoke;
+using OhData.Server.Benchmarks.Streaming;
 
 namespace OhData.Server.Benchmarks;
 
@@ -11,6 +12,10 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        // SPIKE #867: the peak-memory / time-to-first-byte console harness. Not a BenchmarkDotNet run.
+        if (args.Contains("--stream-probe", StringComparer.OrdinalIgnoreCase))
+            return await StreamProbe.RunAsync(args);
+
         // Resolve the dataset seed and export it unconditionally (even the const default) so every
         // BenchmarkDotNet child process this run spawns agrees on it — see BenchSeedResolver.
         (int seed, string seedSource) = BenchSeedResolver.Resolve(args);
@@ -67,6 +72,8 @@ public static class Program
             // ODataQueryOptions, differing only in whether the ODataQueryContext is shared (the
             // pre-fix shape, which raced) or built per request (the shipped, correct one).
             typeof(QueryContextConstructionBenchmarks),
+            // SPIKE #867: buffered vs streamed top-level collection GET.
+            typeof(StreamingCollectionBenchmarks),
         }).Run(switcherArgs);
         return 0;
     }
