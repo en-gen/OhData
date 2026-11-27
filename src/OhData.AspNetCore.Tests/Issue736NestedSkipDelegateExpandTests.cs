@@ -150,6 +150,16 @@ public sealed class Issue736NestedSkipDelegateExpandTests
         lock (ProductKeys) Assert.Equal(ids.OrderBy(i => i), ProductKeys.OrderBy(i => i));
     }
 
+    [Theory]
+    [InlineData("9223372036854775807")]
+    [InlineData("2147483647")]
+    public async Task AHugeNestedTop_WithASkip_ReturnsTheRestWithoutOverflow(string top)
+    {
+        TestFixture fx = await HostAsync();
+        JsonElement root = await GetOkAsync(fx, $"/odata/VAs?$expand=Lines($skip=1;$top={top};$expand=Product)");
+        AssertLinesCarryOwnProduct(LinesOfFirst(root), 11, 12);
+    }
+
     [Fact]
     public async Task ABatchGrandchild_ReceivesOnlyTheKeysOfRowsInTheResponse()
     {
@@ -188,11 +198,11 @@ public sealed class Issue736NestedSkipDelegateExpandTests
     {
         TestFixture fx = await HostAsync();
         JsonElement root = await GetOkAsync(
-            fx, "/odata/VAs?$expand=Lines($filter=Id ge 10;$orderby=Id desc;$count=true;$skip=1;$expand=Product)");
+            fx, "/odata/VAs?$expand=Lines($filter=Id ge 11;$orderby=Id desc;$count=true;$skip=1;$expand=Product)");
         JsonElement va = root.GetProperty("value")[0];
 
-        Assert.Equal(3, va.GetProperty("Lines@odata.count").GetInt32());
-        AssertLinesCarryOwnProduct(va.GetProperty("Lines"), 11, 10);
-        lock (ProductKeys) Assert.Equal(new[] { 10, 11 }, ProductKeys.OrderBy(i => i));
+        Assert.Equal(2, va.GetProperty("Lines@odata.count").GetInt32());
+        AssertLinesCarryOwnProduct(va.GetProperty("Lines"), 11);
+        lock (ProductKeys) Assert.Equal(new[] { 11 }, ProductKeys.OrderBy(i => i));
     }
 }

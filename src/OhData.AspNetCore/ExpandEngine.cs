@@ -608,7 +608,7 @@ internal static class ExpandEngine
                     preWindowCount = all.Count;
                     int skip = expandItem.SkipOption is long dsk && dsk > 0 ? (int)Math.Min(dsk, all.Count) : 0;
                     int end = expandItem.TopOption is long dtp
-                        ? (int)Math.Min(all.Count, skip + Math.Max(dtp, 0L))
+                        ? (dtp >= all.Count - skip ? all.Count : skip + (int)Math.Max(dtp, 0L))
                         : all.Count;
                     relatedByIndex[i] = all.GetRange(skip, end - skip);
                 }
