@@ -83,7 +83,7 @@ public sealed class TiRootProfile : EntitySetProfile<int, TiRoot>
 /// <summary>
 /// The Include fallback chains ThenInclude by reflection. EF's two ThenInclude overloads differ by the
 /// PREVIOUS navigation's shape (collection vs reference), so the overload must be chosen by the previous
-/// navigation, not by the child. Both mixed shapes used to throw an ArgumentException (500).
+/// navigation, not by the child; a reference parent with a collection child (and the reverse) is served.
 /// </summary>
 public sealed class ThenIncludeOverloadSelectionTests
 {
