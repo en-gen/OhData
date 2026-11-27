@@ -2694,7 +2694,7 @@ internal static class ExpandEngine
     // #206 phase 2 (optioned + multi-level expand): resolve a $expand item that targets a
     // delegate-less, pushdown-eligible navigation into an EngagedExpand (recursing into its own
     // nested $expand), or return false to DEFER the whole branch off the pushdown path (it then stays
-    // EDM-only for the request, exactly as before). Deferred cases: $search/$compute/$apply
+    // EDM-only for the request, exactly as before). Deferred cases: $compute/$apply ($search is refused earlier, #754)
     // (unsupported inside a pushed expand); a nested $expand whose child is delegate-backed, cyclic,
     // or a non-member-init-projectable type (the parent is deferred wholesale so a pushed branch is
     // delegate-less AND projectable end-to-end); an intermediate level whose element type cannot be
@@ -2713,7 +2713,7 @@ internal static class ExpandEngine
         if (remainingDepth < 1) return false;
         if (item.SearchOption is not null || item.ComputeOption is not null || item.ApplyOption is not null)
         {
-            return false; // $search/$compute/$apply inside an expand — not implemented on the pushdown path
+            return false; // $compute/$apply inside an expand — not implemented on the pushdown path
         }
 
         // $levels: bounded self-referential recursion over the binding BuildLevelsNavBinding
