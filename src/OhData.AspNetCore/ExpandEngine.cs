@@ -597,42 +597,35 @@ internal static class ExpandEngine
                     relatedByIndex[i] = navShaper(relatedByIndex[i]);
                 }
 
+                // #736: window the CLR list itself (count taken first, §11.2.5.5) so element j of the
+                // serialized array is element j of relatedByIndex[i] for the flatten below.
+                int? preWindowCount = null;
+                if (isCollectionNav
+                    && (expandItem.SkipOption is not null || expandItem.TopOption is not null)
+                    && relatedByIndex[i] is System.Collections.IEnumerable windowSeq)
+                {
+                    List<object?> all = windowSeq.Cast<object?>().ToList();
+                    preWindowCount = all.Count;
+                    int skip = expandItem.SkipOption is long dsk && dsk > 0 ? (int)Math.Min(dsk, all.Count) : 0;
+                    int end = expandItem.TopOption is long dtp
+                        ? (dtp >= all.Count - skip ? all.Count : skip + (int)Math.Max(dtp, 0L))
+                        : all.Count;
+                    relatedByIndex[i] = all.GetRange(skip, end - skip);
+                }
+
                 // Fold-in #2: cardinality comes from the EDM (isCollectionNav, already resolved
                 // above), never sniffed from relatedByIndex[i]'s own CLR shape.
                 jsonItems[i][expandKey] = SerializeBounded(
                     relatedByIndex[i], targetEdmType, registration.EdmModel, nestedClause, serializerOptions,
                     isCollectionValue: isCollectionNav);
 
-                // #650: a nested $count IS answerable here, unlike $filter/$orderby/$top above, so it
-                // is implemented rather than refused — refusing something free would be gratuitous.
-                // Honest because the delegate's answer is not windowed: nothing between it and here
-                // truncates (the $top/$skip rejection above is what guarantees that), so this array
-                // IS the full related collection and its length IS the count. Contrast the pushdown
-                // path, where materialization is capped at MaxExpandTop + 1 and WriteNestedCountAndWindow
-                // must call EnsureWithinExpandCeiling before it can trust the number.
+                // #650: a nested $count is answerable here. It is the pre-window count (#736 takes it
+                // above), else the length of the serialized array, which nothing has truncated.
                 if (isCollectionNav && expandItem.CountOption == true
-                    && jsonItems[i][expandKey] is JsonArray countArr)
+                    && (preWindowCount is not null || jsonItems[i][expandKey] is JsonArray))
                 {
-                    jsonItems[i][$"{expandKey}@odata.count"] = countArr.Count;
-                }
-
-                // #650: window LAST, and specifically after the count — §11.2.5.5 makes
-                // Nav@odata.count the count of the collection after $filter and BEFORE $top/$skip, so
-                // counting a windowed array would report the page size as the total. That is #379's
-                // defect one level down. The pushdown path sequences these the same way
-                // (WriteNestedCountAndWindow counts, then calls ApplyNestedWindow).
-                //
-                // MaxExpandTop is deliberately NOT imposed here: bounding a delegate's answer behind
-                // its back stays out of scope (see the Declared deviations table). This applies only
-                // the window the CLIENT asked for.
-                if (isCollectionNav
-                    && (expandItem.SkipOption is not null || expandItem.TopOption is not null)
-                    && jsonItems[i][expandKey] is JsonArray windowArr)
-                {
-                    ApplyNestedWindow(
-                        windowArr,
-                        expandItem.SkipOption is long dsk ? (int)Math.Min(dsk, int.MaxValue) : null,
-                        expandItem.TopOption is long dtp ? (int)Math.Min(dtp, int.MaxValue) : null);
+                    jsonItems[i][$"{expandKey}@odata.count"] =
+                        preWindowCount ?? ((JsonArray)jsonItems[i][expandKey]!).Count;
                 }
             }
 

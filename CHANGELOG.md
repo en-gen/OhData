@@ -807,6 +807,11 @@ status codes or headers.
 
 ### Fixed
 
+- **A nested `$skip` on a delegate-backed navigation paired each child with the wrong grandchild (#736).**
+  `$expand=Lines($skip=1;$expand=Product)` windowed the serialized array but not the CLR list behind it, so line 11
+  carried product 10 and the grandchild delegate was called with keys of skipped rows. The delegate result is now
+  windowed as a list before serialization; `@odata.count` still reports the full filtered total.
+
 - **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
   they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`
