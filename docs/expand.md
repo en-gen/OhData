@@ -206,12 +206,13 @@ A pushed (delegate-less) `$expand` honors the nested options of the expanded col
 | `$count` — `Children($count=true)` | ✅ | inline `Children@odata.count` = full filtered count (paging is applied after counting, per §11.2.5.5); bounded by [`MaxExpandTop`](#complexity-limits) when that is set (it defaults to no ceiling) |
 | **nested `$expand`** — `Children($expand=Grandkids)` | ✅ | multi-level pushdown: folded into the same query as an `Include`→`ThenInclude` JOIN when every level is delegate-less (see [Multi-level `$expand`](#multi-level-expand-and-levels) below) |
 | `$levels` — `Children($levels=2)` / `Children($levels=max)` | ✅ | recursive self-referential expand, bounded by `MaxExpansionDepth`; may carry `$filter`/`$orderby`/`$skip`/`$top`/`$count`/`$select`, applied at **every** level (see below) |
-| `$search` / `$compute` / `$apply` | ❌ (deferred) | not implemented on the pushdown path |
+| `$search` — `Children($search=x)` | ❌ refused | `501` `UnsupportedQueryOption` before any handler runs, on every navigation |
+| `$compute` / `$apply` | ❌ (deferred) | not implemented on the pushdown path |
 
 A deferred nested option is not an error: the request still returns `200`, but the delegate-less navigation that carried it stays EDM-only for that request — the framework doesn't load it via pushdown, though whatever the handler's own query already populated (or didn't) is what serializes (see the caveat above). Nested options on a **delegate-backed** navigation follow the delegate path and are subject to that path's own support (see [navigation-routing.md](navigation-routing.md)); they never engage pushdown. <a id="nested-options-on-a-delegate-backed-navigation"></a>
 #### Nested options on a delegate-backed navigation
 
-**Nothing is silently dropped there.** Every nested option a delegate-backed navigation cannot honour is rejected with `400` (`InvalidQueryOption`), naming the option and the remedy:
+**Nothing is silently dropped there.** Every nested option a delegate-backed navigation cannot honour is rejected (`400` `InvalidQueryOption`, or `501` for `$search`), naming the option and the remedy:
 
 | Nested option (on a **delegate-backed** nav) | Answer |
 |---|---|
@@ -219,6 +220,7 @@ A deferred nested option is not an error: the request still returns `200`, but t
 | `$top` / `$skip` | ✅ applied — windowed after the count, per §11.2.5.5 |
 | `$count` | ✅ applied — counted after `$filter` and **before** `$top`/`$skip` (§11.2.5.5) |
 | nested `$expand` **beneath a raw-served parent** | `400` — that branch does not recurse, so the navigation's handler never runs and there is nothing to shape |
+| `$search` | `501` — refused before the delegate runs ([#754](https://github.com/en-gen/OhData/issues/754)) |
 | `$select` | ✅ applied — JSON projection of the materialized children |
 | nested `$expand` | resolved through the delegate path, level by level |
 | multi-level `$levels` | `400` |
