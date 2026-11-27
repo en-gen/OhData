@@ -321,6 +321,10 @@ resource, not a query option) - on that route only `$filter` is gated, by `Filte
 > Code that reads `options.Top` or `options.Skip` directly, rather than through `ApplyTo`, still sees
 > the request's values.
 >
+> A Priority-1 profile that calls `options.Validate` with `AllowedQueryOptions` that exclude `Count` fails
+> every `/$count` request with `500`, including a bare one, because the validator sees a count request.
+> Include `AllowedQueryOptions.Count` in those settings.
+>
 > `Accept: application/xml` on this segment still answers `406` — §11.2.9 forbids the *client* to
 > negotiate, which is not a licence for the server to ship a media type the client refused.
 >
