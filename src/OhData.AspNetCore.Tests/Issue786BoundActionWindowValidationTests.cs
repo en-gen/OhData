@@ -1,8 +1,11 @@
 using System;
+using System.Collections;
+using System.Collections.Immutable;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -152,6 +155,11 @@ public class Issue786BoundActionWindowValidationTests
     [InlineData("Name", "$top=11")]
     [InlineData("Name", "$top=abc")]
     [InlineData("Name", "$skip=-1")]
+    [InlineData("IntList", "$top=11")]
+    [InlineData("IntArray", "$top=11")]
+    [InlineData("IntArray", "$top=abc")]
+    [InlineData("Comparable", "$top=11")]
+    [InlineData("Comparable", "$top=abc")]
     public async Task NonCollectionAction_AcceptsTheWindowAsANoOp_AndReachesTheHandler(string action, string query)
     {
         Za786KindsProfile.Calls = 0;
@@ -176,6 +184,13 @@ public class Issue786BoundActionWindowValidationTests
     [InlineData("ListCloneable", "$top=abc")]
     [InlineData("ListCloneable", "$top=11")]
     [InlineData("ListCloneable", "$skip=-1")]
+    [InlineData("ListImmutable", "$top=abc")]
+    [InlineData("ListImmutable", "$top=11")]
+    [InlineData("ListSegment", "$top=abc")]
+    [InlineData("ListSegment", "$top=11")]
+    [InlineData("ListICollection", "$top=abc")]
+    [InlineData("ListIList", "$top=abc")]
+    [InlineData("ListEnumerable", "$top=abc")]
     public async Task CollectionCapableAction_IsStillPreChecked(string action, string query)
     {
         Za786KindsProfile.Calls = 0;
@@ -200,9 +215,9 @@ internal sealed class Za786EtagProfile : EntitySetProfile<int, Za786Widget>
         BindEntityAction(Touch);
     }
 
-    private Task<IEnumerable<Za786Widget>> Touch(int key)
+    private static Task<IEnumerable<Za786Widget>> Touch(int key)
     {
-        EntCalls++;
+        Interlocked.Increment(ref EntCalls);
         return Task.FromResult<IEnumerable<Za786Widget>>(new[] { new Za786Widget { Id = 1 } });
     }
 }
@@ -221,15 +236,31 @@ internal sealed class Za786KindsProfile : EntitySetProfile<int, Za786Widget>
         BindAction(ListObject);
         BindAction(ListReadOnly);
         BindAction(ListCloneable);
+        BindAction(ListImmutable);
+        BindAction(ListSegment);
+        BindAction(ListICollection);
+        BindAction(ListIList);
+        BindAction(ListEnumerable);
+        BindAction(IntList);
+        BindAction(IntArray);
+        BindAction(Comparable);
         BindEntityAction(Name);
     }
 
-    private Task ArchiveVoid() { Calls++; return Task.CompletedTask; }
-    private Task<int> CountAll() { Calls++; return Task.FromResult(3); }
-    private Task<object> ListObject() { Calls++; return Task.FromResult<object>(new List<Za786Widget> { new() { Id = 1 } }); }
-    private Task<IReadOnlyList<object>> ListReadOnly() { Calls++; return Task.FromResult<IReadOnlyList<object>>(new List<object> { new Za786Widget { Id = 1 } }); }
-    private Task<ICloneable> ListCloneable() { Calls++; return Task.FromResult<ICloneable>(new Za786Widget[] { new() { Id = 1 } }); }
-    private Task<Za786Widget> Name(int key) { Calls++; return Task.FromResult(new Za786Widget { Id = key, Name = "w" }); }
+    private static Task ArchiveVoid() { Interlocked.Increment(ref Calls); return Task.CompletedTask; }
+    private static Task<int> CountAll() { Interlocked.Increment(ref Calls); return Task.FromResult(3); }
+    private static Task<object> ListObject() { Interlocked.Increment(ref Calls); return Task.FromResult<object>(new List<Za786Widget> { new() { Id = 1 } }); }
+    private static Task<IReadOnlyList<object>> ListReadOnly() { Interlocked.Increment(ref Calls); return Task.FromResult<IReadOnlyList<object>>(new List<object> { new Za786Widget { Id = 1 } }); }
+    private static Task<ICloneable> ListCloneable() { Interlocked.Increment(ref Calls); return Task.FromResult<ICloneable>(new Za786Widget[] { new() { Id = 1 } }); }
+    private static Task<ImmutableArray<Za786Widget>> ListImmutable() { Interlocked.Increment(ref Calls); return Task.FromResult(ImmutableArray.Create(new Za786Widget { Id = 1 })); }
+    private static Task<ArraySegment<Za786Widget>> ListSegment() { Interlocked.Increment(ref Calls); return Task.FromResult(new ArraySegment<Za786Widget>(new[] { new Za786Widget { Id = 1 } })); }
+    private static Task<ICollection> ListICollection() { Interlocked.Increment(ref Calls); return Task.FromResult<ICollection>(new[] { new Za786Widget { Id = 1 } }); }
+    private static Task<IList> ListIList() { Interlocked.Increment(ref Calls); return Task.FromResult<IList>(new List<Za786Widget> { new() { Id = 1 } }); }
+    private static Task<IEnumerable> ListEnumerable() { Interlocked.Increment(ref Calls); return Task.FromResult<IEnumerable>(new List<Za786Widget> { new() { Id = 1 } }); }
+    private static Task<List<int>> IntList() { Interlocked.Increment(ref Calls); return Task.FromResult(new List<int> { 1 }); }
+    private static Task<int[]> IntArray() { Interlocked.Increment(ref Calls); return Task.FromResult(new[] { 1 }); }
+    private static Task<IComparable> Comparable() { Interlocked.Increment(ref Calls); return Task.FromResult<IComparable>(3); }
+    private static Task<Za786Widget> Name(int key) { Interlocked.Increment(ref Calls); return Task.FromResult(new Za786Widget { Id = key, Name = "w" }); }
 }
 
 internal sealed class Za786Widget
@@ -253,15 +284,15 @@ internal sealed class Za786WidgetProfile : EntitySetProfile<int, Za786Widget>
         BindEntityAction(ArchiveOne);
     }
 
-    private Task<IEnumerable<Za786Widget>> ArchiveAll()
+    private static Task<IEnumerable<Za786Widget>> ArchiveAll()
     {
-        CollCalls++;
+        Interlocked.Increment(ref CollCalls);
         return Task.FromResult<IEnumerable<Za786Widget>>(new[] { new Za786Widget { Id = 1 }, new Za786Widget { Id = 2 } });
     }
 
-    private Task<IEnumerable<Za786Widget>> ArchiveOne(int key)
+    private static Task<IEnumerable<Za786Widget>> ArchiveOne(int key)
     {
-        EntCalls++;
+        Interlocked.Increment(ref EntCalls);
         return Task.FromResult<IEnumerable<Za786Widget>>(new[] { new Za786Widget { Id = 1 }, new Za786Widget { Id = 2 } });
     }
 }
@@ -282,15 +313,15 @@ internal sealed class Za786SecuredProfile : EntitySetProfile<int, Za786Widget>
         ConfigureAuthorization(a => a.Invoke(i => i.RequireRole("Admin")));
     }
 
-    private Task<IEnumerable<Za786Widget>> ArchiveAll()
+    private static Task<IEnumerable<Za786Widget>> ArchiveAll()
     {
-        CollCalls++;
+        Interlocked.Increment(ref CollCalls);
         return Task.FromResult<IEnumerable<Za786Widget>>(new[] { new Za786Widget { Id = 1 } });
     }
 
-    private Task<IEnumerable<Za786Widget>> ArchiveOne(int key)
+    private static Task<IEnumerable<Za786Widget>> ArchiveOne(int key)
     {
-        EntCalls++;
+        Interlocked.Increment(ref EntCalls);
         return Task.FromResult<IEnumerable<Za786Widget>>(new[] { new Za786Widget { Id = 1 } });
     }
 }
