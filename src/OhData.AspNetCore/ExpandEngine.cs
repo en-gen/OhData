@@ -4436,7 +4436,8 @@ internal static class ExpandEngine
                         childAccess, child, child.Binding.ElementType, model, childBound, maxExpandTop);
                 }
 
-                MethodInfo? thenInclude = child.Binding.IsCollection
+                // The overload follows the PREVIOUS navigation's shape, not the child's.
+                MethodInfo? thenInclude = path[depth - 1].Binding.IsCollection
                     ? thenIncludeMethods.Collection
                     : thenIncludeMethods.Reference;
                 if (thenInclude is null)
