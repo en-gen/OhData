@@ -30,12 +30,17 @@ namespace OhData.Server.Benchmarks.Streaming;
 /// </remarks>
 internal static class StreamProbe
 {
-    private sealed record Sample(
+    internal sealed record Sample(
         double TtfbMs, double TotalMs, long PeakHeapDeltaBytes, long AllocatedBytes,
         int Gen0, int Gen1, int Gen2, long BodyBytes);
 
     internal static async Task<int> RunAsync(string[] args)
     {
+        if (args.Contains("--cell-child", StringComparer.OrdinalIgnoreCase))
+            return await StreamProbeChild.RunChildAsync(args);
+        if (args.Contains("--pressure", StringComparer.OrdinalIgnoreCase) || args.Contains("--sanity", StringComparer.OrdinalIgnoreCase))
+            return await StreamProbeChild.RunParentAsync(args);
+
         string host = Arg(args, "--host", "testserver").ToLowerInvariant();
         bool smoke = args.Contains("--smoke", StringComparer.OrdinalIgnoreCase);
         int runs = int.Parse(Arg(args, "--runs", smoke ? "3" : "30"), CultureInfo.InvariantCulture);
@@ -100,7 +105,7 @@ internal static class StreamProbe
         return 0;
     }
 
-    private static async Task<Sample> MeasureAsync(HttpClient client, string url)
+    internal static async Task<Sample> MeasureAsync(HttpClient client, string url)
     {
         GC.Collect();
         GC.WaitForPendingFinalizers();
@@ -207,22 +212,22 @@ internal static class StreamProbe
         Console.WriteLine($"wrote {baseName}.md and .csv");
     }
 
-    private static string F(double v) => v.ToString("F3", CultureInfo.InvariantCulture);
+    internal static string F(double v) => v.ToString("F3", CultureInfo.InvariantCulture);
 
-    private static double Median(IEnumerable<double> values)
+    internal static double Median(IEnumerable<double> values)
     {
         double[] a = values.OrderBy(v => v).ToArray();
         if (a.Length == 0) return double.NaN;
         return a.Length % 2 == 1 ? a[a.Length / 2] : (a[a.Length / 2 - 1] + a[a.Length / 2]) / 2.0;
     }
 
-    private static string Arg(string[] args, string name, string fallback)
+    internal static string Arg(string[] args, string name, string fallback)
     {
         int i = Array.FindIndex(args, a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase));
         return i >= 0 && i + 1 < args.Length ? args[i + 1] : fallback;
     }
 
-    private static string? Git(string arguments)
+    internal static string? Git(string arguments)
     {
         try
         {
@@ -243,7 +248,7 @@ internal static class StreamProbe
         }
     }
 
-    private static string CpuName()
+    internal static string CpuName()
     {
         try
         {

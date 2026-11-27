@@ -132,3 +132,14 @@ cell) are what answer this; they were deliberately not run.
   Kestrel mode is `--host kestrel` (real loopback socket). Arms are interleaved, first arm alternates,
   and the harness throws if an arm did not stream (or did).
 - Run BDN and the probe from this worktree only, never from the main checkout root.
+
+## Pressure and sanity modes (added after the first prelim run)
+
+The default probe cannot show whether memory is flat: with the default workstation gen0 budget gen0
+count is 0, so "peak heap" is bytes allocated. Pressure mode runs ONE FRESH CHILD PROCESS per (cell, arm)
+so `DOTNET_GCgen0MaxBudget` / `DOTNET_GCHeapHardLimit` apply and `PeakWorkingSet64` is the cell's own.
+Smoke only: with `--gen0-mb 4` gen0 counts rose to 10-25 per cell (knob verified effective); in the
+1 GiB sanity smoke (2 rounds) the buffered arm's peak working set grew with concurrency (e.g. EF
+GetQueryable 10k rows: 328/494/855 MB at 8/16/32) while streamed stayed 144-164 MB, and no cell OOMed
+[EST, smoke, not a measurement]. Fixture fix: the EF host now uses a named shared-cache SQLite DB so
+concurrent requests do not share one connection (the first sanity smoke showed HTTP 500s from that, not OOM).

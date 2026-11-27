@@ -38,14 +38,17 @@ internal sealed class StreamBenchHost : IAsyncDisposable
 
     public static async Task<StreamBenchHost> StartAsync(bool kestrel)
     {
-        var connection = new SqliteConnection("Data Source=:memory:");
+        // Shared-cache named in-memory DB: each scoped DbContext gets its own connection, so concurrent
+        // requests do not trip over one shared connection. The keep-alive connection holds the DB open.
+        string connectionString = $"Data Source=streambench-{Guid.NewGuid():N};Mode=Memory;Cache=Shared";
+        var connection = new SqliteConnection(connectionString);
         connection.Open();
 
         var builder = WebApplication.CreateBuilder();
         if (kestrel) builder.WebHost.UseUrls("http://127.0.0.1:0");
         else builder.WebHost.UseTestServer();
         builder.Logging.ClearProviders();
-        builder.Services.AddDbContext<StreamBenchDbContext>(o => o.UseSqlite(connection));
+        builder.Services.AddDbContext<StreamBenchDbContext>(o => o.UseSqlite(connectionString));
         builder.Services.AddOhData(o =>
         {
             o.WithPrefix("/odata");
