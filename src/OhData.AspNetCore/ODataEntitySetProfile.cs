@@ -50,7 +50,8 @@ public abstract class ODataEntitySetProfile<TKey, TModel> : EntitySetProfile<TKe
     /// ("If a data service does not support a system query option, it MUST fail any request that
     /// contains the unsupported option"); declare it when the handler reads <c>options.Search</c>
     /// itself. That is a different thing from a <c>Search</c> HANDLER, which #465 refuses on this
-    /// route because there is no seam to feed a search-derived source into.
+    /// route because there is no seam to feed a search-derived source into. Declaring it does not
+    /// cover a nested <c>$search</c> inside <c>$expand</c>, which is always refused with 501.
     /// </para>
     /// </remarks>
     protected OhDataSystemQueryOption HonouredQueryOptions { get; init; } = OhDataSystemQueryOption.Default;

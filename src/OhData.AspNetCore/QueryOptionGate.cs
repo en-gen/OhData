@@ -781,6 +781,29 @@ internal static class QueryOptionGate
         return null;
     }
 
+    // #754: refuse a nested $search the expand cannot apply (it would be silently dropped), before any
+    // handler runs, independent of pushdown like ValidateNestedTopCeiling. 501 per Part 1 §9.3.1 / §11.2.5.
+    internal static IResult? ValidateUnsupportedNestedExpand(SelectExpandClause? clause)
+    {
+        if (clause is null) return null;
+
+        foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            string nav = item.PathToNavigationProperty.FirstSegment.Identifier;
+
+            if (item.SearchOption is not null)
+            {
+                return OhDataEndpointFactory.ODataError(501, "UnsupportedQueryOption",
+                    $"The query option '$search' inside '$expand' on the navigation '{nav}' is not supported.");
+            }
+
+            IResult? deeper = ValidateUnsupportedNestedExpand(item.SelectAndExpand);
+            if (deeper is not null) return deeper;
+        }
+
+        return null;
+    }
+
     // #429: reject a $expand tree with more expansions than the resolved MaxExpandBreadth, before any
     // handler or query runs.
     //
