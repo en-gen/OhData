@@ -808,7 +808,7 @@ status codes or headers.
 ### Fixed
 
 - **A `JsonException` thrown by user code on `PUT` or `PATCH` answered `400 InvalidBody` and echoed its message (#863).**
-  The entity `PUT` and `PATCH` routes mapped every `JsonException`, including one raised inside a `Put`, upsert-create `Post`,
+  The entity `PUT` and `PATCH` routes mapped every `JsonException`, including one raised by a scoped profile constructor or inside a `Put`, upsert-create `Post`,
   `Patch` or `GetById` handler, the ETag selector or the response serializer, to a client error. Each now reaches the
   unhandled-exception filter and answers the same generic `500` as the collection `POST`; only reading and binding the
   request body answers `400 InvalidBody`.

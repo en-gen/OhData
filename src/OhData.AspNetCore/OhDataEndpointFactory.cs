@@ -5571,9 +5571,9 @@ internal static class OhDataEndpointFactory
                 if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
                 // True while user code (handlers, create-auth policies) runs: its JsonException is a server fault.
                 bool runningUserCode = false;
+                var s = ResolveHandlers(ctx);
                 try
                 {
-                    var s = ResolveHandlers(ctx);
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                     TModel? model;
 
@@ -5801,9 +5801,9 @@ internal static class OhDataEndpointFactory
                 logger?.LogDebug("PATCH {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
                 if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
                 bool runningUserCode = false;
+                var s = ResolveHandlers(ctx);
                 try
                 {
-                    var s = ResolveHandlers(ctx);
                     object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
                     var body = await JsonSerializer.DeserializeAsync<JsonElement>(
                         ctx.Request.Body, jsonOptions, ct);
