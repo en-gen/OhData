@@ -59,7 +59,6 @@ public sealed class Issue354NavCountTests
     public async Task CountValue_GetsTheSameStatusAsTheCollectionRoute_AndABadOneNeverReachesTheHandler(string value)
     {
         await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Nav354Profile>());
-        Nav354Profile.NavInvocations = 0;
 
         var top = await fx.Client.GetAsync($"/odata/Nav354Parents?$count={value}");
         Nav354Profile.NavInvocations = 0;
