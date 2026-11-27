@@ -4046,10 +4046,6 @@ internal static class OhDataEndpointFactory
                     IResult? capabilityError = QueryOptionGate.CheckCollectionQueryOptionCapabilities(ctx, source, QueryOptionGate.s_collectionImplementedOptions);
                     if (capabilityError is not null) return capabilityError;
 
-                    var s = ResolveHandlers(ctx);
-                    var queryable = (IQueryable<TModel>)(await AsHandlerFault(WithExceptionMapping(s.InvokeGetQueryableAsync(ct), source, ctx, OhDataOperation.Read)))
-                                    .Cast<TModel>();
-
                     // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
                     if (!TryBuildQueryOptions<TModel>(registration.EdmModel, ctx, logger,
                             out ODataQueryOptions<TModel>? options, out IResult? optionsError))
@@ -4081,6 +4077,11 @@ internal static class OhDataEndpointFactory
                     IResult? breadthError = QueryOptionGate.ValidateExpandBreadth(
                         options.SelectExpand?.SelectExpandClause, source.MaxExpandBreadth, source.MaxExpansionDepth);
                     if (breadthError is not null) return breadthError;
+
+                    // Source acquisition comes after every gate, so a refused request never reaches the handler.
+                    var s = ResolveHandlers(ctx);
+                    var queryable = (IQueryable<TModel>)(await AsHandlerFault(WithExceptionMapping(s.InvokeGetQueryableAsync(ct), source, ctx, OhDataOperation.Read)))
+                                    .Cast<TModel>();
 
                     // Gap 4: $search on GetQueryable path — delegate to the Search handler, then
                     // apply remaining OData query options on top of the in-memory result set.
