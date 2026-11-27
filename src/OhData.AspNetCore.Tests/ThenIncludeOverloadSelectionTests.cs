@@ -33,6 +33,8 @@ public sealed class TiItem
     public int Id { get; set; }
     public int OwnerId { get; set; }
     public string Label { get; set; } = "";
+    public int? TagId { get; set; }
+    public TiStamp? Tag { get; set; }
 }
 
 public sealed class TiPart
@@ -64,6 +66,7 @@ public sealed class TiDbContext : DbContext
         b.Entity<TiRoot>().HasOne(r => r.Owner).WithMany().HasForeignKey(r => r.OwnerId);
         b.Entity<TiRoot>().HasMany(r => r.Parts).WithOne().HasForeignKey(p => p.RootId);
         b.Entity<TiOwner>().HasMany(o => o.Items).WithOne().HasForeignKey(i => i.OwnerId);
+        b.Entity<TiItem>().HasOne(i => i.Tag).WithMany().HasForeignKey(i => i.TagId);
         b.Entity<TiPart>().HasOne(p => p.Stamp).WithMany().HasForeignKey(p => p.StampId);
     }
 }
@@ -96,9 +99,10 @@ public sealed class ThenIncludeOverloadSelectionTests
         var db = scope.ServiceProvider.GetRequiredService<TiDbContext>();
         db.Database.EnsureCreated();
         db.Owners.Add(new TiOwner { Id = 1, Name = "o" });
-        db.Items.Add(new TiItem { Id = 10, OwnerId = 1, Label = "i1" });
-        db.Items.Add(new TiItem { Id = 11, OwnerId = 1, Label = "i2" });
         db.Stamps.Add(new TiStamp { Id = 5, Mark = "M" });
+        db.SaveChanges();
+        db.Items.Add(new TiItem { Id = 10, OwnerId = 1, Label = "i1", TagId = 5 });
+        db.Items.Add(new TiItem { Id = 11, OwnerId = 1, Label = "i2" });
         db.Roots.Add(new TiRoot { Id = 1, OwnerId = 1 });
         db.SaveChanges();
         db.Parts.Add(new TiPart { Id = 20, RootId = 1, StampId = 5 });
@@ -121,6 +125,23 @@ public sealed class ThenIncludeOverloadSelectionTests
         Assert.Equal("o", owner.GetProperty("Name").GetString());
         Assert.Equal(new[] { "i1", "i2" },
             owner.GetProperty("Items").EnumerateArray().Select(i => i.GetProperty("Label").GetString()!).OrderBy(x => x));
+    }
+
+    [Fact]
+    public async Task ReferenceThenCollectionThenReference_IsServed()
+    {
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection);
+
+        HttpResponseMessage r = await fx.Client.GetAsync("/odata/TiRoots?$expand=Owner($expand=Items($expand=Tag))");
+        string body = await r.Content.ReadAsStringAsync();
+
+        Assert.True(r.StatusCode == HttpStatusCode.OK, body);
+        JsonElement items = JsonDocument.Parse(body).RootElement.GetProperty("value")[0]
+            .GetProperty("Owner").GetProperty("Items");
+        JsonElement tagged = items.EnumerateArray().Single(i => i.GetProperty("Label").GetString() == "i1");
+        Assert.Equal("M", tagged.GetProperty("Tag").GetProperty("Mark").GetString());
     }
 
     [Fact]

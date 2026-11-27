@@ -4432,7 +4432,8 @@ internal static class OhDataEndpointFactory
                             //
                             // #616 narrowed this: a nested $expand is chained with ThenInclude now, so
                             // only $levels reaches the refusal.
-                            if (ExpandEngine.FindLevelsExpand(engagedExpandNavs) is { } nestedNav)
+                            if (ExpandEngine.FindLevelsExpandForFallback(
+                                    engagedExpandNavs, registration.EdmModel, projectionIneligibleReason) is { } nestedNav)
                             {
                                 // #322: same correction as the message above — name the check that
                                 // actually failed, not the whole rule.
@@ -4481,11 +4482,19 @@ internal static class OhDataEndpointFactory
                                 // reaches the classifier. It therefore goes INSIDE the factory
                                 // TranslateThenMaterialize treats as translation.
                                 items = QueryOptionGate.EvaluateQueryWithArithmeticFaultGuard(
-                                    () => QueryOptionGate.TranslateThenMaterialize(() => ApplySelectPushdown(
-                                        ExpandEngine.ApplyIncludeFallback(
+                                    () => QueryOptionGate.TranslateThenMaterialize(() =>
+                                    {
+                                        IQueryable<TModel> included = ExpandEngine.ApplyIncludeFallback(
                                             filtered, engagedExpandNavs, efInclude,
                                             ExpandEngine.ResolveEfThenIncludeMethods(efAssembly!), registration.EdmModel,
-                                            source.MaxExpandTop, cachedBinderSettings))),
+                                            source.MaxExpandTop, cachedBinderSettings);
+                                        // #740: a $select projection over the Include would rebuild the root and
+                                        // drop the loaded navigations, so it is skipped when an expand reaches a
+                                        // polymorphic target; the response is shaped by the JSON pass.
+                                        return ExpandEngine.ReachesPolymorphicTarget(engagedExpandNavs, registration.EdmModel)
+                                            ? included
+                                            : ApplySelectPushdown(included);
+                                    }),
                                     options, logger, source.EntitySetName);
                                 // engagedExpandNavs stays SET (not nulled): the existing
                                 // ShapePushedExpandsInJson pass below shapes nested

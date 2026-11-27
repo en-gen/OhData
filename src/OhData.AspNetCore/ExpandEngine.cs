@@ -2310,9 +2310,7 @@ internal static class ExpandEngine
         // expand reaches a polymorphic target leaves the projection and takes the Include path.
         if (edmModel is not null && expandNavs is not null && ReachesPolymorphicTarget(expandNavs, edmModel))
         {
-            ineligibilityReason =
-                "an expanded navigation targets a type with derived types in the EDM, and a member-init " +
-                "projection can only construct the declared type";
+            ineligibilityReason = PolymorphicTargetIneligibility;
             logger?.LogDebug(
                 "OhData: pushdown projection skipped for {EntitySet}: an expanded navigation targets a polymorphic type.",
                 source.EntitySetName);
@@ -2864,7 +2862,11 @@ internal static class ExpandEngine
             return false;
         });
 
-    private static bool ReachesPolymorphicTarget(IReadOnlyList<EngagedExpand> navs, IEdmModel model)
+    internal const string PolymorphicTargetIneligibility =
+        "an expanded navigation targets a type with derived types in the EDM, and a member-init " +
+        "projection can only construct the declared type";
+
+    internal static bool ReachesPolymorphicTarget(IReadOnlyList<EngagedExpand> navs, IEdmModel model)
     {
         foreach (EngagedExpand nav in navs)
         {
@@ -4343,6 +4345,22 @@ internal static class ExpandEngine
     // depth is decided per request by the data, so there is no statically-known nesting to build a
     // chain from -- and the projection path's own $levels support (BuildLevelsNavAccess) works by
     // emitting a Select per level, which filtered Include does not accept.
+    // When the Include fallback was taken ONLY because an expand reaches a polymorphic target (#740),
+    // $levels is refused only inside a branch that reaches one; a sibling $levels branch is served.
+    internal static EngagedExpand? FindLevelsExpandForFallback(
+        IReadOnlyList<EngagedExpand> engaged, IEdmModel model, string? ineligibilityReason)
+    {
+        if (!string.Equals(ineligibilityReason, PolymorphicTargetIneligibility, StringComparison.Ordinal))
+            return FindLevelsExpand(engaged);
+
+        foreach (EngagedExpand e in engaged)
+        {
+            if (ReachesPolymorphicTarget(new[] { e }, model) && FindLevelsExpand(new[] { e }) is { } nested)
+                return nested;
+        }
+        return null;
+    }
+
     internal static EngagedExpand? FindLevelsExpand(IReadOnlyList<EngagedExpand> engaged)
     {
         foreach (EngagedExpand e in engaged)

@@ -81,7 +81,8 @@ except in the ways below.
 
 | | |
 |---|---|
-| `$filter`, `$orderby`, `$select`, `$top`, `$skip`, `$count` | unchanged |
+| `$filter`, `$orderby`, `$top`, `$skip`, `$count` | unchanged |
+| `$select` beside `$expand` of a polymorphic type | yes — the navigation stays populated, with derived members and `@odata.type` |
 | `$expand=Nav` | yes — a filtered `Include` |
 | `$expand=Nav($filter=…;$orderby=…;$top=…)` | yes, pushed to SQL |
 | `$expand=Nav($expand=Deeper)` | yes — chained `ThenInclude` |
@@ -89,7 +90,7 @@ except in the ways below.
 
 ### What does not
 
-**`$levels` is refused with `400`.** Its depth is decided per request by the data, so there is no
+**`$levels` is refused with `400` only when it is under a polymorphic target.** A `$levels` branch beside a polymorphic expand is served. Its depth is decided per request by the data, so there is no
 statically-known nesting to build an `Include` chain from — and the projection path serves it by
 emitting a `Select` per level, which a filtered `Include` does not accept. The error names `$levels`
 specifically.
