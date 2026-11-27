@@ -78,6 +78,23 @@ public sealed class Issue354NavCountTests
     }
 
     [Theory]
+    [InlineData("$orderby=")]
+    [InlineData("$top=")]
+    [InlineData("$skip=")]
+    public async Task EmptyOptionWithCount_Is400OnBothRoutes_AndNeverReachesTheNavigationHandler(string option)
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Nav354Profile>());
+
+        var top = await fx.Client.GetAsync($"/odata/Nav354Parents?$count=true&{option}");
+        Nav354Profile.NavInvocations = 0;
+        var nav = await fx.Client.GetAsync($"{Nav}?$count=true&{option}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, top.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, nav.StatusCode);
+        Assert.Equal(0, Nav354Profile.NavInvocations);
+    }
+
+    [Theory]
     [InlineData("?$count=false")]
     [InlineData("")]
     public async Task NoCountRequested_EmitsNoCountMember(string query)
