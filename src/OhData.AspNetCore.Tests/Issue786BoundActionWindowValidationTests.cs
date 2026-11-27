@@ -101,6 +101,123 @@ public class Issue786BoundActionWindowValidationTests
         Assert.Equal(expected, r.StatusCode);
         Assert.Equal(0, calls);
     }
+
+    // A repeated option: ?$top=1&$top=abc must not let the first valid value mask the invalid one.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DuplicateTop_WithAnInvalidValue_IsRefused_AndDoesNotReachTheHandler(bool entity)
+    {
+        await using TestFixture fx = await BuildAsync();
+
+        using HttpResponseMessage r = await fx.Client.PostAsync(Url(entity, "$top=1&$top=abc"), Json());
+
+        Assert.True(Calls(entity) == 0, $"status={(int)r.StatusCode} counter={Calls(entity)}");
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+    }
+
+    // Precedence: the window refusal wins over a stale If-Match (which alone would be 412), because
+    // it is checked before the precondition gate. Neither reaches the handler.
+    [Fact]
+    public async Task BadTop_WinsOverAStaleIfMatch_OnAnEntityAction()
+    {
+        Za786EtagProfile.EntCalls = 0;
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Za786EtagProfile>());
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, "/odata/Za786Etags(1)/Touch?$top=abc") { Content = Json() };
+        req.Headers.TryAddWithoutValidation("If-Match", "W/\"stale\"");
+        using HttpResponseMessage r = await fx.Client.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        Assert.Equal(0, Za786EtagProfile.EntCalls);
+
+        // Control: with a valid window the same stale If-Match is the 412 it always was.
+        using var ctl = new HttpRequestMessage(HttpMethod.Post, "/odata/Za786Etags(1)/Touch?$top=1") { Content = Json() };
+        ctl.Headers.TryAddWithoutValidation("If-Match", "W/\"stale\"");
+        using HttpResponseMessage c = await fx.Client.SendAsync(ctl);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, c.StatusCode);
+        Assert.Equal(0, Za786EtagProfile.EntCalls);
+    }
+
+    // A window is only meaningful where the result can be a collection. A void or scalar action keeps
+    // accepting $top/$skip as no-ops (docs/bound-operations.md), so the handler IS reached.
+    [Theory]
+    [InlineData("ArchiveVoid", "$top=11")]
+    [InlineData("ArchiveVoid", "$top=abc")]
+    [InlineData("ArchiveVoid", "$skip=-1")]
+    [InlineData("CountAll", "$top=11")]
+    [InlineData("CountAll", "$top=abc")]
+    [InlineData("CountAll", "$skip=-1")]
+    [InlineData("Name", "$top=11")]
+    [InlineData("Name", "$top=abc")]
+    [InlineData("Name", "$skip=-1")]
+    public async Task NonCollectionAction_AcceptsTheWindowAsANoOp_AndReachesTheHandler(string action, string query)
+    {
+        Za786KindsProfile.Calls = 0;
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Za786KindsProfile>());
+
+        string path = action == "Name" ? "/odata/Za786Kinds(1)/Name" : $"/odata/Za786Kinds/{action}";
+        using HttpResponseMessage r = await fx.Client.PostAsync(path + "?" + query, Json());
+
+        Assert.True((int)r.StatusCode is >= 200 and < 300, $"{action} {query} status={(int)r.StatusCode}");
+        Assert.Equal(1, Za786KindsProfile.Calls);
+    }
+
+    // Task<object> can return a collection at runtime, so it stays pre-checked.
+    [Theory]
+    [InlineData("$top=abc")]
+    [InlineData("$top=11")]
+    [InlineData("$skip=-1")]
+    public async Task ObjectReturningAction_IsStillPreChecked(string query)
+    {
+        Za786KindsProfile.Calls = 0;
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Za786KindsProfile>());
+
+        using HttpResponseMessage r = await fx.Client.PostAsync("/odata/Za786Kinds/ListObject?" + query, Json());
+
+        Assert.True(Za786KindsProfile.Calls == 0, $"{query} status={(int)r.StatusCode} counter={Za786KindsProfile.Calls}");
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+    }
+}
+
+internal sealed class Za786EtagProfile : EntitySetProfile<int, Za786Widget>
+{
+    internal static int EntCalls;
+
+    public Za786EtagProfile() : base(x => x.Id)
+    {
+        EntitySetName = "Za786Etags";
+        GetById = (id, _) => OhDataResult.Success<Za786Widget?>(new Za786Widget { Id = id, Name = "w" });
+        UseETag(x => x.Name);
+        BindEntityAction(Touch);
+    }
+
+    private Task<IEnumerable<Za786Widget>> Touch(int key)
+    {
+        EntCalls++;
+        return Task.FromResult<IEnumerable<Za786Widget>>(new[] { new Za786Widget { Id = 1 } });
+    }
+}
+
+internal sealed class Za786KindsProfile : EntitySetProfile<int, Za786Widget>
+{
+    internal static int Calls;
+
+    public Za786KindsProfile() : base(x => x.Id)
+    {
+        EntitySetName = "Za786Kinds";
+        MaxTop = 10;
+        GetById = (id, _) => OhDataResult.Success<Za786Widget?>(new Za786Widget { Id = id, Name = "w" });
+        BindAction(ArchiveVoid);
+        BindAction(CountAll);
+        BindAction(ListObject);
+        BindEntityAction(Name);
+    }
+
+    private Task ArchiveVoid() { Calls++; return Task.CompletedTask; }
+    private Task<int> CountAll() { Calls++; return Task.FromResult(3); }
+    private Task<object> ListObject() { Calls++; return Task.FromResult<object>(new List<Za786Widget> { new() { Id = 1 } }); }
+    private Task<Za786Widget> Name(int key) { Calls++; return Task.FromResult(new Za786Widget { Id = key, Name = "w" }); }
 }
 
 internal sealed class Za786Widget
