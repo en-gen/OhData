@@ -13,9 +13,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.8.0] - 2026-11-27
 
-1.8.0 is 1.7.0 plus `ConfigureExceptions` and the restore fix below. It has no breaking changes:
-package validation runs against the 1.7.0 packages, targets and dependency ranges are unchanged,
-and upgrading needs no code changes.
+1.8.0 is 1.7.0 plus `ConfigureExceptions` and the restore fix below. The public API is
+unchanged (package validation runs against the 1.7.0 packages), the target frameworks are
+`net8.0` and `net10.0` as before, and `Microsoft.AspNetCore.OData` and `Microsoft.OData.ModelBuilder`
+keep their ranges. The packages' floating dependency ranges resolve at pack time, so the floors in
+the 1.8.0 nuspecs are higher than 1.7.0's: `NSwag.Generation.AspNetCore` `14.8.0`,
+`Swashbuckle.AspNetCore.SwaggerGen` `10.3.1` and `Microsoft.AspNetCore.OpenApi` `10.0.15`.
 
 ### Added
 
@@ -72,6 +75,8 @@ and upgrading needs no code changes.
   because the package's direct `Microsoft.OpenApi` `[2.12.2, 3.0.0)` reference sat below the
   `>= 2.13.0` that `Microsoft.AspNetCore.OpenApi` 10.0.15 requires. The direct reference is gone;
   `Microsoft.OpenApi` now arrives only through `Microsoft.AspNetCore.OpenApi`.
+  The package's floor on `Microsoft.AspNetCore.OpenApi` is now `[10.0.15, 11.0.0)`; a consumer
+  pinned to an earlier 10.0.x of it must move to 10.0.15 or later.
 
 ### Build
 
