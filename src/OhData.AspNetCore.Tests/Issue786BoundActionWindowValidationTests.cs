@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
@@ -163,19 +164,26 @@ public class Issue786BoundActionWindowValidationTests
         Assert.Equal(1, Za786KindsProfile.Calls);
     }
 
-    // Task<object> can return a collection at runtime, so it stays pre-checked.
+    // A declared type that can hold a collection at runtime (object, any interface, any IEnumerable
+    // class) is pre-checked, because the handler may return a collection of the set's own type.
     [Theory]
-    [InlineData("$top=abc")]
-    [InlineData("$top=11")]
-    [InlineData("$skip=-1")]
-    public async Task ObjectReturningAction_IsStillPreChecked(string query)
+    [InlineData("ListObject", "$top=abc")]
+    [InlineData("ListObject", "$top=11")]
+    [InlineData("ListObject", "$skip=-1")]
+    [InlineData("ListReadOnly", "$top=abc")]
+    [InlineData("ListReadOnly", "$top=11")]
+    [InlineData("ListReadOnly", "$skip=-1")]
+    [InlineData("ListCloneable", "$top=abc")]
+    [InlineData("ListCloneable", "$top=11")]
+    [InlineData("ListCloneable", "$skip=-1")]
+    public async Task CollectionCapableAction_IsStillPreChecked(string action, string query)
     {
         Za786KindsProfile.Calls = 0;
         await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Za786KindsProfile>());
 
-        using HttpResponseMessage r = await fx.Client.PostAsync("/odata/Za786Kinds/ListObject?" + query, Json());
+        using HttpResponseMessage r = await fx.Client.PostAsync($"/odata/Za786Kinds/{action}?" + query, Json());
 
-        Assert.True(Za786KindsProfile.Calls == 0, $"{query} status={(int)r.StatusCode} counter={Za786KindsProfile.Calls}");
+        Assert.True(Za786KindsProfile.Calls == 0, $"{action} {query} status={(int)r.StatusCode} counter={Za786KindsProfile.Calls}");
         Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
     }
 }
@@ -211,12 +219,16 @@ internal sealed class Za786KindsProfile : EntitySetProfile<int, Za786Widget>
         BindAction(ArchiveVoid);
         BindAction(CountAll);
         BindAction(ListObject);
+        BindAction(ListReadOnly);
+        BindAction(ListCloneable);
         BindEntityAction(Name);
     }
 
     private Task ArchiveVoid() { Calls++; return Task.CompletedTask; }
     private Task<int> CountAll() { Calls++; return Task.FromResult(3); }
     private Task<object> ListObject() { Calls++; return Task.FromResult<object>(new List<Za786Widget> { new() { Id = 1 } }); }
+    private Task<IReadOnlyList<object>> ListReadOnly() { Calls++; return Task.FromResult<IReadOnlyList<object>>(new List<object> { new Za786Widget { Id = 1 } }); }
+    private Task<ICloneable> ListCloneable() { Calls++; return Task.FromResult<ICloneable>(new Za786Widget[] { new() { Id = 1 } }); }
     private Task<Za786Widget> Name(int key) { Calls++; return Task.FromResult(new Za786Widget { Id = key, Name = "w" }); }
 }
 
