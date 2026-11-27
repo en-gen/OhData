@@ -214,6 +214,9 @@ A **bound action** whose result is a collection of the entity set's own type hon
 | `MaxTop = null` | no ceiling — the full collection in one response |
 | `Prefer: maxpagesize` | **not honoured**, and no `Preference-Applied` is emitted |
 
+A malformed `$top`/`$skip` or a `$top` above `MaxTop` is refused **before the action runs**, so the
+`400` never follows a side effect (a caller the route's authorization refuses still gets `401`/`403`).
+
 **Why a refusal and not a page.** A `@odata.nextLink` is a URL the client **GETs** (Protocol
 §11.2.5.7), and an action is invoked by `POST` to its action URL (§11.5.4.1) — so there is no
 GET-addressable continuation of an action invocation for a link to point at. A continuation link
@@ -255,9 +258,15 @@ Three things worth knowing:
 - **`$top`/`$skip` are listed unconditionally**, not derived from the declared return type. The
   `MaxTop` ceiling is applied to whatever the handler returns at runtime, so a handler declared
   `Task<object>` really can produce a `$skip=N` continuation — and refusing the option would mean
-  refusing a link the server itself had just issued. Where the result is not a collection they are
-  accepted no-ops. On an **unbound** operation there is no collection branch and no continuation,
-  so they are refused.
+  refusing a link the server itself had just issued. On an action the values are validated before the
+  handler when its declared return type can hold a collection of the set's own type (a collection of
+  `TModel`, `object`, or an interface or non-sealed class that a `List<TModel>` or `TModel[]` is
+  assignable to, such as `IList` or `ICloneable`); a void, scalar, single-entity or
+  unrelated-element-collection action accepts them as no-ops. An interface or class that only some
+  other collection implements (for example `ISerializable` via a `HashSet<TModel>`) is not
+  recognised from the declared type, so its handler runs before a bad value is refused; declare the
+  collection type or `IEnumerable<TModel>` to get the up-front check. On an **unbound** operation
+  there is no collection branch and no continuation, so they are refused.
 - **The gate runs before parameter binding and before the handler delegate**, so a refused
   **action** invocation provably mutates nothing.
 

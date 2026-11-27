@@ -7405,6 +7405,14 @@ internal static class OhDataEndpointFactory
                     ctx, QueryOptionGate.s_boundOperationImplementedOptions);
                 if (opUnsupported is not null) return opUnsupported;
 
+                // #786: $top/$skip/MaxTop are checked here, after the endpoint's authorization and
+                // before any user code, so a 400 never follows a side effect.
+                if (BoundOperationResults.MayReturnCollectionOf<TModel>(actionCapture)
+                    && !BoundOperationResults.TryValidateOperationWindow(ctx, source, out _, out _, out IResult? windowError))
+                {
+                    return windowError!;
+                }
+
                 var s = ResolveHandlers(ctx);
                 var requestAction = s.BoundActions.First(a => a.Name == actionCapture.Name && !a.IsEntityLevel);
                 object?[] args = new object?[actionCapture.Parameters.Length];
@@ -7582,6 +7590,13 @@ internal static class OhDataEndpointFactory
                         IResult? opUnsupported = QueryOptionGate.CheckUnsupportedSystemQueryOptions(
                             ctx, QueryOptionGate.s_boundOperationImplementedOptions);
                         if (opUnsupported is not null) return opUnsupported;
+
+                        // #786: see the collection-bound action above.
+                        if (BoundOperationResults.MayReturnCollectionOf<TModel>(actionCapture)
+                            && !BoundOperationResults.TryValidateOperationWindow(ctx, source, out _, out _, out IResult? windowError))
+                        {
+                            return windowError!;
+                        }
 
                         var s = ResolveHandlers(ctx);
                         var requestAction = s.BoundActions.First(a => a.Name == actionCapture.Name && a.IsEntityLevel);
