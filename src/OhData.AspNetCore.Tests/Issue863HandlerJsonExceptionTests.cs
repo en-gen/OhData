@@ -254,6 +254,20 @@ public class Issue863HandlerJsonExceptionTests
     [Theory]
     [InlineData("PUT")]
     [InlineData("PATCH")]
+    public async Task RequiredPropertyGetterJsonException_DuringNullabilityValidation_Is500(string method)
+    {
+        await using var fx = await BuildFaultHostAsync();
+        try
+        {
+            Issue863Faults.Name = true;
+            await AssertGenericServerFault(await fx.Client.SendAsync(Write(method, "1")), Issue863Faults.GetterMessage);
+        }
+        finally { Issue863Faults.Reset(); }
+    }
+
+    [Theory]
+    [InlineData("PUT")]
+    [InlineData("PATCH")]
     public async Task ResponseSerializationJsonException_Is500(string method)
     {
         await using var fx = await BuildFaultHostAsync();
@@ -284,15 +298,16 @@ internal static class Issue863Faults
 {
     public const string CtorMessage = "profile ctor payload bad";
     public const string GetterMessage = "getter payload bad";
-    public static volatile bool Ctor, Key, Tag, Serialize;
-    public static void Reset() { Ctor = false; Key = false; Tag = false; Serialize = false; }
+    public static volatile bool Ctor, Key, Tag, Serialize, Name;
+    public static void Reset() { Ctor = false; Key = false; Tag = false; Serialize = false; Name = false; }
 }
 
 internal sealed class Issue863FaultItem
 {
     private int _id;
     public int Id { get => Issue863Faults.Key ? throw new JsonException(Issue863Faults.GetterMessage) : _id; set => _id = value; }
-    public string Name { get; set; } = "";
+    private string _name = "";
+    public string Name { get => Issue863Faults.Name ? throw new JsonException(Issue863Faults.GetterMessage) : _name; set => _name = value; }
     public int Tag => Issue863Faults.Tag ? throw new JsonException(Issue863Faults.GetterMessage) : 1;
     public int Extra => Issue863Faults.Serialize ? throw new JsonException(Issue863Faults.GetterMessage) : 1;
 }
