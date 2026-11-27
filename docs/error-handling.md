@@ -78,10 +78,17 @@ a base mapping plus a specific one behaves the way a `catch` ladder reads.
 ## Where a mapping applies
 
 A mapping applies to the handlers of a **top-level entity set**: the collection read (`GetAll`,
-`GetQueryable`, `GetODataQueryable`, `Search`, and the `/$count` route's use of them), `GetById`,
-`Post`, `Put` (including the create branch of an upsert), `Patch` (including the single-property
-`PUT` and `DELETE` routes, which call it), and `Delete`. A handler that owns a keyset `$skiptoken` can therefore reject a malformed
-or stale token with a `400` or `409` by throwing a type you map.
+`GetQueryable`, `GetODataQueryable`, `Search`, and the `/$count` route's use of them), `GetById` (the
+by-key route only), `Post`, `Put` (including the create branch of an upsert), `Patch` (including the single-property
+`PUT` and `DELETE` routes, which call it), and `Delete`. A handler that owns a keyset
+`$skiptoken` can therefore reject a malformed or stale token with a `400` or `409` by throwing a type
+you map.
+
+`GetById` is mapped only when the by-key route itself calls it. These other callers invoke it
+**unmapped**, so an exception thrown there is a logged `500`: the single-property `GET` and `$value`
+routes (`OhDataEndpointFactory.cs`, `InvokeGetByIdAsync` calls in the property routes), the
+`If-Match`/`If-None-Match` existence precheck (`CheckETagAsync`), the `PUT` `If-None-Match: *` guard,
+and the resource-authorization filter.
 
 Navigation handlers, bound and unbound operations, and the handlers the `$expand` pushdown calls
 are **not** covered: an exception thrown there is an unmapped logged `500`.
@@ -103,7 +110,7 @@ by `Operation`. Switch on that and read what it implies, rather than null-checki
 | member | populated |
 |---|---|
 | `EntitySetName`, `Operation`, `QueryString` | always |
-| `Key` | keyed routes |
+| `Key` | keyed routes; `null` on the create branch of an upsert `PUT`, which calls `Post` |
 | `Model` | `Post`, `Put` |
 | `Delta` | `Patch` |
 | `Navigation` | not populated by any route in this release (always `null`) |

@@ -13,8 +13,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.8.0] - 2026-11-27
 
-1.8.0 is 1.7.0 plus `ConfigureExceptions` and the restore fix below. The public API is
-unchanged (package validation runs against the 1.7.0 packages), the target frameworks are
+1.8.0 is 1.7.0 plus `ConfigureExceptions` and the restore fix below. The public API change is additive only: no member is removed or changed (package validation runs
+against the 1.7.0 packages). The new public surface is `OhDataResult`, `OhDataExceptionContext<TModel>`,
+`IExceptionMappingBuilder<TModel>` and the protected `EntitySetProfile.ConfigureExceptions`. The target frameworks are
 `net8.0` and `net10.0` as before, and `Microsoft.AspNetCore.OData` and `Microsoft.OData.ModelBuilder`
 keep their ranges. The packages' floating dependency ranges resolve at pack time, so the floors in
 the 1.8.0 nuspecs are higher than 1.7.0's: `NSwag.Generation.AspNetCore` `14.8.0`,
