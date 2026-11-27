@@ -807,6 +807,10 @@ status codes or headers.
 
 ### Fixed
 
+- **A nested `$search` inside `$expand` was silently dropped (#754).**
+  `$expand=Lines($search=x)` answered `200` with every child on a delegate navigation, and on other
+  navigations either every child or none. It is now refused with `501 UnsupportedQueryOption` before any
+  handler runs, on the collection, single-entity and `GetAll` routes (OData Part 1 §9.3.1, §11.2.5).
 - **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
   they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`

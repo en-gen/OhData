@@ -60,34 +60,34 @@ internal static class QueryOptionGate
     internal sealed class FilterArithmeticFaultException(string message) : Exception(message);
 
     /// <summary>
-    /// Evaluates <paramref name="materialize"/> — an enumeration (<c>ToArray</c>) or
-    /// <c>LongCount</c> of the $filter/$orderby-ApplyTo'd query for the current request — and
+    /// Evaluates <paramref name="materialize"/> â€” an enumeration (<c>ToArray</c>) or
+    /// <c>LongCount</c> of the $filter/$orderby-ApplyTo'd query for the current request â€” and
     /// converts a <see cref="DivideByZeroException"/>/<see cref="OverflowException"/> raised
     /// DURING that specific call into a <see cref="FilterArithmeticFaultException"/> the calling
     /// route's own catch clause turns into 400 InvalidQueryOption.
     /// <para>
-    /// Scope (adversarial review R2, HIGH — "narrow the try"): callers must wrap ONLY the
+    /// Scope (adversarial review R2, HIGH â€” "narrow the try"): callers must wrap ONLY the
     /// materialization call itself, never handler invocation, <c>ApplyCollectionPipelineAsync</c>
     /// (nav delegates, batch handlers, ETag computation), or JSON serialization. An arithmetic
     /// fault raised from any of those is a genuine server bug, not a client input problem, and
     /// must reach the group-level exception filter (logged, 500) like any other unexpected
-    /// exception — never be relabeled 400 just because it happens to share an exception type with
+    /// exception â€” never be relabeled 400 just because it happens to share an exception type with
     /// a bad $filter.
     /// </para>
     /// <para>
     /// Guard (same review, same finding): only engages when <paramref name="options"/> actually
     /// carries a $filter or $orderby. Without either, no client-supplied expression could be the
-    /// cause of a fault raised while enumerating this query — e.g. a profile's own
+    /// cause of a fault raised while enumerating this query â€” e.g. a profile's own
     /// <c>GetQueryable</c> Select projection dividing by zero is enumerated at this exact call
     /// site with NO $filter in the request, and must 500 (a genuine handler bug), not 400. When
     /// the guard doesn't match, the exception is left alone and propagates normally.
     /// </para>
     /// <para>
-    /// Provider note: this only ever engages when the .NET runtime itself raises the exception —
+    /// Provider note: this only ever engages when the .NET runtime itself raises the exception â€”
     /// LINQ-to-Objects and EF Core's InMemory provider evaluate arithmetic client-side. A real
     /// relational provider (SQL Server, PostgreSQL, SQLite) may instead defer the fault into the
     /// database (raising a <c>DbException</c> subclass, or in SQLite's case treating division by
-    /// zero as NULL and returning zero matching rows) — neither is caught here. That gap is
+    /// zero as NULL and returning zero matching rows) â€” neither is caught here. That gap is
     /// tracked separately; see #358's follow-up issue for a provider-independent fix.
     /// </para>
     /// </summary>
@@ -178,7 +178,7 @@ internal static class QueryOptionGate
             // unwind, and the CLR swallows anything it throws itself, so a probe there would lose
             // its own faults without a trace.
             //
-            // §11.2.9 forbids $orderby from affecting a count, so a framework-composed count query
+            // Â§11.2.9 forbids $orderby from affecting a count, so a framework-composed count query
             // never carries one and $filter is the only thing here that can be blamed. CanCompile
             // enumerates rather than counts, which is the right question: what must translate is the
             // composed shape, not the aggregate over it. If it DOES compile the fault was at
@@ -190,7 +190,7 @@ internal static class QueryOptionGate
     }
 
     /// <summary>
-    /// Whether the source the profile handed over is an EF Core query that compiles on its own —
+    /// Whether the source the profile handed over is an EF Core query that compiles on its own â€”
     /// i.e. whether a translation failure can honestly be attributed to what the framework added.
     /// </summary>
     /// <remarks>
@@ -213,7 +213,7 @@ internal static class QueryOptionGate
     /// Whether the provider can compile <paramref name="query"/>, established without executing it.
     /// </summary>
     /// <remarks>
-    /// The enumerator is created — which is what compiles the query, with no connection opened —
+    /// The enumerator is created â€” which is what compiles the query, with no connection opened â€”
     /// and disposed. Callers gate on an EF Core provider first, because that is the only one this
     /// holds for.
     /// </remarks>
@@ -250,7 +250,7 @@ internal static class QueryOptionGate
     /// <summary>
     /// The <c>400</c> a root translation failure becomes. It shares the clause
     /// <c>could not be translated by the underlying data provider</c> with the <c>$expand</c>
-    /// pushdown's message — the diagnosis and the remedy differ, because the causes do.
+    /// pushdown's message â€” the diagnosis and the remedy differ, because the causes do.
     /// </summary>
     private static Microsoft.OData.ODataException RootTranslationFailure(
         Exception real, string blamedOption, ILogger? logger, string entitySetName)
@@ -337,7 +337,7 @@ internal static class QueryOptionGate
         }
     }
 
-    // B1 fix: capability-flag enforcement (Minimal item 7 — "parse the option or reject it").
+    // B1 fix: capability-flag enforcement (Minimal item 7 â€” "parse the option or reject it").
     // FilterEnabled/OrderByEnabled/SelectEnabled/ExpandEnabled/CountEnabled were previously
     // decorative on the GetQueryable and Priority-1 collection paths: the flags only drove EDM
     // model-bound capability annotations (Swagger/$metadata advertisement), never a runtime
@@ -355,7 +355,7 @@ internal static class QueryOptionGate
     }
 
     // Applies CheckDisabledQueryOption across the full $filter/$orderby/$select/$expand/$count
-    // set — the gate used by the GetQueryable and Priority-1 collection GET routes. $filter and
+    // set â€” the gate used by the GetQueryable and Priority-1 collection GET routes. $filter and
     // $orderby are optionally skipped (checkFilterOrderBy: false) on paths that already reject
     // them structurally regardless of the flag (the GetAll path, which has no ApplyTo pipeline).
     internal static IResult? CheckCollectionQueryOptionCapabilities(
@@ -363,7 +363,7 @@ internal static class QueryOptionGate
         bool checkFilterOrderBy = true)
     {
         // #196/#359: reject every $-prefixed system option this route does not implement, rather
-        // than ignoring it silently (Minimal-conformance item 7 — "parse the option or reject
+        // than ignoring it silently (Minimal-conformance item 7 â€” "parse the option or reject
         // it"). The set is the caller's, because the GetAll path implements one option fewer.
         IResult? unimplemented = CheckUnsupportedSystemQueryOptions(ctx, implementedOptions);
         if (unimplemented is not null) return unimplemented;
@@ -384,14 +384,14 @@ internal static class QueryOptionGate
         return sr;
     }
 
-    // ── Unsupported system query options: one matcher, every read route ──────────────────
+    // â”€â”€ Unsupported system query options: one matcher, every read route â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     //
     // #359/#380/#353. The rule is the '$' SIGIL, not a name allowlist: a non-'$' key is a custom
-    // option (Part 2 §5.2) and passes through, a '$' key the route does not implement is refused
+    // option (Part 2 Â§5.2) and passes through, a '$' key the route does not implement is refused
     // whether or not any OData version defines it. Sets are PER ROUTE and deliberately differ.
     //
     // 501 IS "CAN'T", 400 IS "WON'T". 501 where no profile setting could make this request work on
-    // this route (§9.3.1 and §13.1.1 item 7, both MUSTs); 400 where it could and the adopter
+    // this route (Â§9.3.1 and Â§13.1.1 item 7, both MUSTs); 400 where it could and the adopter
     // declined -- a capability flag, an allowlist, a malformed value (#402). So the same option can
     // be 501 on one entity set and 400 on another; that is per-resource conformance, not a bug.
     //
@@ -412,15 +412,15 @@ internal static class QueryOptionGate
     // not honour it". True -- but the consequence was that a P1 profile with no $search handling
     // answered 200 with the FULL collection to a client that asked for a subset, which a client
     // cannot detect (an unfiltered result is indistinguishable from a search that matched
-    // everything), and §11.2.5 makes refusing it a MUST.
+    // everything), and Â§11.2.5 makes refusing it a MUST.
     //
     // The split is resolved by asking the profile instead of guessing: see
     // BuildPriority1ImplementedOptions. Microsoft.AspNetCore.OData ignores $search without an
     // ISearchBinder by choice ("If the developer doesn't provide the search binder, let's ignore the
     // $search clause"), so this is a deliberate divergence from MS -- the same one #359/#380/#353
-    // already made, where §11.2.5's MUST outweighs aligning with MS.
+    // already made, where Â§11.2.5's MUST outweighs aligning with MS.
     // #475: the Priority-1 route's implemented-option set, from the profile's own declaration.
-    // $format is always present -- it never reaches a route handler (§11.2.10 is negotiated once on
+    // $format is always present -- it never reaches a route handler (Â§11.2.10 is negotiated once on
     // the group filter) and cannot change a row. Built once per entity set at startup.
     internal static string[] BuildPriority1ImplementedOptions(OhDataSystemQueryOption honoured)
     {
@@ -446,7 +446,7 @@ internal static class QueryOptionGate
     // The GetAll (simple read) collection route. Identical except that $skiptoken is NOT
     // implemented: #201's ApplyGetAllPaging continues with $skip and nothing on this path ever
     // reads a $skiptoken, so accepting one meant discarding a client's continuation in silence.
-    // $filter/$orderby are listed even though this path always refuses them — it does so earlier,
+    // $filter/$orderby are listed even though this path always refuses them â€” it does so earlier,
     // with a message naming GetQueryable as the remedy, and one condition must not produce two
     // different envelopes depending on which check saw it first.
     internal static readonly string[] s_getAllCollectionImplementedOptions =
@@ -455,11 +455,11 @@ internal static class QueryOptionGate
         "$search", FormatOption,
     };
 
-    // GET /{Set}/$count. §11.2.9 partitions the options and specifies each class:
+    // GET /{Set}/$count. Â§11.2.9 partitions the options and specifies each class:
     //   affects the count ($filter, $search) -- applied where this route can, refused where it
     //     cannot, because ignoring one returns a wrong number under a 200 (#353);
     //   "MUST NOT be affected by $top, $skip, $orderby, or $expand" -- accepted and IGNORED, since
-    //     under §13.1.1 item 7 ignoring them IS following the specification;
+    //     under Â§13.1.1 item 7 ignoring them IS following the specification;
     //   everything else -- refused like any other route.
     // $select and $format are accepted-and-ignored by ruling: $select changes an item's shape, never
     // its membership, and $format is already answered by the group filter, so refusing it would give
@@ -480,11 +480,11 @@ internal static class QueryOptionGate
     };
 
     // GET /{Set}({key})/{Prop} and its /$value (#560). Both ride GetById and read NO query option
-    // at all — the handler goes straight from the property accessor to the envelope — so even
+    // at all â€” the handler goes straight from the property accessor to the envelope â€” so even
     // $select, which the sibling entity route implements, is refused rather than silently dropped.
     internal static readonly string[] s_propertyRouteImplementedOptions = { FormatOption };
 
-    // GET /{Set}({key})/{Nav} — the delegate-backed navigation COLLECTION route, which parses
+    // GET /{Set}({key})/{Nav} â€” the delegate-backed navigation COLLECTION route, which parses
     // $select/$orderby/$skip/$top/$count directly off the query string.
     private static readonly string[] s_navCollectionImplementedOptions =
     {
@@ -495,27 +495,27 @@ internal static class QueryOptionGate
     // Same route template, different handler branch, and the branch reads NO query option at all:
     // it serializes the related entity through ODataEntityNode, whose own remark records that no
     // $expand is possible on that path, and every option the collection branch applies is applied
-    // inside `if (navIsCollection)` — $select in BuildNavEnvelope, $orderby/$skip/$top/$count in
+    // inside `if (navIsCollection)` â€” $select in BuildNavEnvelope, $orderby/$skip/$top/$count in
     // the branch body. Sharing the collection set here therefore accepted and DISCARDED
-    // $select/$orderby/$top/$count under a 200 (measured), which is #380's own defect statement —
+    // $select/$orderby/$top/$count under a 200 (measured), which is #380's own defect statement â€”
     // "known, implemented-elsewhere options being silently dropped on a route that does not
-    // implement them" — on a route this change touches, and left GET /Set(1)?$orderby=X a 400
+    // implement them" â€” on a route this change touches, and left GET /Set(1)?$orderby=X a 400
     // beside GET /Set(1)/Owner?$orderby=X a 200.
     //
     // The refusal is the fix rather than implementing $select here: this change is about refusing
     // what is not implemented, and $select on a single-valued nav needs the projection, the
     // allowlist validation and the @odata.context projection suffix that ODataEntityResult carries
-    // and ODataEntityNode does not — a feature, with its own wire-shape decisions.
+    // and ODataEntityNode does not â€” a feature, with its own wire-shape decisions.
     private static readonly string[] s_navSingleImplementedOptions = { FormatOption };
 
-    // GET /{Set}({key})/{Nav}/$count. The same §11.2.9 partition as the entity-set /$count one
+    // GET /{Set}({key})/{Nav}/$count. The same Â§11.2.9 partition as the entity-set /$count one
     // level down, resolved differently in exactly one class because this handler applies even
     // less: it invokes the navigation delegate and counts what comes back, applying NO data option
     // whatsoever.
     //
     //   AFFECTS THE COUNT -- $filter AND $search are both refused here, where the entity-set route
     //         refuses only $search. That is not an inconsistency; it is the same rule reaching a
-    //         different answer on a route with no IQueryable. §11.2.9 requires the count to be
+    //         different answer on a route with no IQueryable. Â§11.2.9 requires the count to be
     //         taken after applying them, this route cannot, and ignoring either would answer a
     //         wrong number under a 200.
     //   MUST NOT AFFECT THE COUNT -- $top/$skip/$orderby/$expand, and $select by the positive
@@ -530,7 +530,7 @@ internal static class QueryOptionGate
         "$top", "$skip", "$orderby", "$expand", "$select", FormatOption,
     };
 
-    // GET /{Set}({key})/{Nav}?$skip=N — the #313 bare-$expand continuation. $skip only.
+    // GET /{Set}({key})/{Nav}?$skip=N â€” the #313 bare-$expand continuation. $skip only.
     internal static readonly string[] s_expandContinuationImplementedOptions =
     {
         "$skip", FormatOption,
@@ -555,7 +555,7 @@ internal static class QueryOptionGate
         "$top", "$skip", FormatOption,
     };
 
-    // The two UNBOUND operation routes — GET|POST /{Op} on the outer group. They serve the
+    // The two UNBOUND operation routes â€” GET|POST /{Op} on the outer group. They serve the
     // handler's result through PreRenderedJson with no collection branch, no MaxTop bound and no
     // continuation link, so $top/$skip are not implemented there and are refused rather than
     // ignored. (That they carry no ceiling at all is a separate, pre-existing gap.)
@@ -566,7 +566,7 @@ internal static class QueryOptionGate
     /// <paramref name="implemented"/>, or <c>null</c> when the request carries none.
     /// <para>
     /// Short-circuits on an empty query string before touching anything, so a request with no
-    /// options at all costs one <see cref="IQueryCollection.Count"/> read and allocates nothing —
+    /// options at all costs one <see cref="IQueryCollection.Count"/> read and allocates nothing â€”
     /// load-bearing on <c>GetById</c>, which is the hottest read route and deliberately builds no
     /// <see cref="ODataQueryOptions{TEntity}"/> unless <c>$select</c>/<c>$expand</c> is present.
     /// The check itself only reads key strings: no parsing, no options construction.
@@ -608,7 +608,7 @@ internal static class QueryOptionGate
             : OhDataEndpointFactory.ODataError(501, "UnsupportedQueryOption", $"The query option '{option}' is not supported.");
     }
 
-    // The navigation route keeps its own wording, which names the options it does support — it
+    // The navigation route keeps its own wording, which names the options it does support â€” it
     // has shipped that way since S1/B1 and is more useful than the generic line on a route whose
     // supported set is small and non-obvious. Same matcher underneath.
     //
@@ -617,8 +617,8 @@ internal static class QueryOptionGate
     // one route template and used to share one set; see s_navSingleImplementedOptions.
     //
     // NEITHER message names $format, which both branches accept. Deliberate, and the two are
-    // consistent about it: $format is not a DATA query option — §11.2.10 negotiation is handled
-    // once on the group filter and never reaches a route handler — which is the framing the
+    // consistent about it: $format is not a DATA query option â€” Â§11.2.10 negotiation is handled
+    // once on the group filter and never reaches a route handler â€” which is the framing the
     // single-valued line states outright and the collection line inherits. The collection line's
     // bytes are additionally pinned as unchanged by the generalisation
     // (NavCollection_ClosedListNames_KeepTheirExactEnvelope), so adding $format to it would be a
@@ -641,9 +641,9 @@ internal static class QueryOptionGate
     // complexity limits (MaxExpansionDepth default 3, node counts 10000/1000/1000 as before) so an
     // implementor can tighten them per profile or globally via WithDefaults. AllowedQueryOptions=All
     // etc. is retained so the only checks these run are the per-property allowlist annotations and
-    // the complexity ceilings — $top/$skip/$count keep their own dedicated enforcement (see the
+    // the complexity ceilings â€” $top/$skip/$count keep their own dedicated enforcement (see the
     // ValidatePropertyAllowlists remark). MaxExpansionDepth is now enforced (was hardcoded 0/disabled):
-    // a $expand nesting deeper than the limit — including a $levels that resolves deeper (#206) — is
+    // a $expand nesting deeper than the limit â€” including a $levels that resolves deeper (#206) â€” is
     // rejected with 400 by Microsoft's SelectExpandQueryValidator rather than silently truncated.
     internal static ODataValidationSettings BuildValidationSettings(IEntitySetEndpointSource source) => new()
     {
@@ -756,7 +756,7 @@ internal static class QueryOptionGate
     //
     // Deliberately depth- AND pushdown-independent: a nested $top is rejected on a delegate-backed
     // navigation too. That mirrors the root MaxTop, which 400s an over-large $top on every read path
-    // regardless of how the collection is ultimately loaded — the ceiling is a statement about what
+    // regardless of how the collection is ultimately loaded â€” the ceiling is a statement about what
     // the client may ask for, not about how the server would have served it.
     //
     // Returns the 400 OData error to return, or null when every nested $top is within the ceiling
@@ -775,6 +775,30 @@ internal static class QueryOptionGate
             }
 
             IResult? deeper = ValidateNestedTopCeiling(item.SelectAndExpand, cap);
+            if (deeper is not null) return deeper;
+        }
+
+        return null;
+    }
+
+    // #754: refuse an $expand option the service cannot apply to the expanded children, before any
+    // handler runs. Today that is a nested $search (silently dropped otherwise); #751 adds $ref/$count.
+    // Pushdown-independent like ValidateNestedTopCeiling. 501 per OData Part 1 §9.3.1 / §11.2.5.
+    internal static IResult? ValidateUnsupportedNestedExpand(SelectExpandClause? clause)
+    {
+        if (clause is null) return null;
+
+        foreach (ExpandedNavigationSelectItem item in clause.SelectedItems.OfType<ExpandedNavigationSelectItem>())
+        {
+            string nav = item.PathToNavigationProperty.FirstSegment.Identifier;
+
+            if (item.SearchOption is not null)
+            {
+                return OhDataEndpointFactory.ODataError(501, "UnsupportedQueryOption",
+                    $"The query option '$search' inside '$expand' on the navigation '{nav}' is not supported.");
+            }
+
+            IResult? deeper = ValidateUnsupportedNestedExpand(item.SelectAndExpand);
             if (deeper is not null) return deeper;
         }
 
@@ -812,9 +836,9 @@ internal static class QueryOptionGate
     }
 
     // Counts navigation expansions in the whole $expand tree, stopping as soon as <paramref
-    // name="cap"/> is exceeded. A $levels=N item counts as N — its resolved level count, through the
+    // name="cap"/> is exceeded. A $levels=N item counts as N â€” its resolved level count, through the
     // SAME ResolveLevelsBudget the loaders use (#428), so the guard cannot disagree with them about
-    // what a $levels resolves to — because that is what it costs: one nested projection level each,
+    // what a $levels resolves to â€” because that is what it costs: one nested projection level each,
     // exactly like the equivalent explicit chain.
     private static int CountExpandNodes(SelectExpandClause clause, int maxExpansionDepth, int cap)
     {

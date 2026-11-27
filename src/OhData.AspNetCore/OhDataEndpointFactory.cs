@@ -3820,6 +3820,10 @@ internal static class OhDataEndpointFactory
                     IResult? nestedTopError = QueryOptionGate.ValidateNestedTopCeiling(
                         options.SelectExpand?.SelectExpandClause, source.MaxExpandTop);
                     if (nestedTopError is not null) return nestedTopError;
+                    // #754: refuse a nested $search the expand cannot apply, before any handler runs.
+                    IResult? nestedUnsupportedError = QueryOptionGate.ValidateUnsupportedNestedExpand(
+                        options.SelectExpand?.SelectExpandClause);
+                    if (nestedUnsupportedError is not null) return nestedUnsupportedError;
                     // #429: reject a $expand tree wider than MaxExpandBreadth, counted across every
                     // level. Depth alone does not bound translation cost; breadth multiplies on top.
                     IResult? breadthError = QueryOptionGate.ValidateExpandBreadth(
@@ -4068,6 +4072,10 @@ internal static class OhDataEndpointFactory
                     IResult? nestedTopError = QueryOptionGate.ValidateNestedTopCeiling(
                         options.SelectExpand?.SelectExpandClause, source.MaxExpandTop);
                     if (nestedTopError is not null) return nestedTopError;
+                    // #754: refuse a nested $search the expand cannot apply, before any handler runs.
+                    IResult? nestedUnsupportedError = QueryOptionGate.ValidateUnsupportedNestedExpand(
+                        options.SelectExpand?.SelectExpandClause);
+                    if (nestedUnsupportedError is not null) return nestedUnsupportedError;
                     // #429: reject a $expand tree wider than MaxExpandBreadth, counted across every
                     // level. Depth alone does not bound translation cost; breadth multiplies on top.
                     IResult? breadthError = QueryOptionGate.ValidateExpandBreadth(
@@ -4796,6 +4804,10 @@ internal static class OhDataEndpointFactory
                     IResult? nestedTopError = QueryOptionGate.ValidateNestedTopCeiling(
                         options.SelectExpand?.SelectExpandClause, source.MaxExpandTop);
                     if (nestedTopError is not null) return nestedTopError;
+                    // #754: refuse a nested $search the expand cannot apply, before any handler runs.
+                    IResult? nestedUnsupportedError = QueryOptionGate.ValidateUnsupportedNestedExpand(
+                        options.SelectExpand?.SelectExpandClause);
+                    if (nestedUnsupportedError is not null) return nestedUnsupportedError;
                     // #429: reject a $expand tree wider than MaxExpandBreadth, counted across every
                     // level. Depth alone does not bound translation cost; breadth multiplies on top.
                     IResult? breadthError = QueryOptionGate.ValidateExpandBreadth(
@@ -5124,6 +5136,10 @@ internal static class OhDataEndpointFactory
                         IResult? nestedTopError = QueryOptionGate.ValidateNestedTopCeiling(
                             options.SelectExpand?.SelectExpandClause, source.MaxExpandTop);
                         if (nestedTopError is not null) return nestedTopError;
+                        // #754: refuse a nested $search the expand cannot apply, before any handler runs.
+                        IResult? nestedUnsupportedError = QueryOptionGate.ValidateUnsupportedNestedExpand(
+                            options.SelectExpand?.SelectExpandClause);
+                        if (nestedUnsupportedError is not null) return nestedUnsupportedError;
                         // #429: reject a $expand tree wider than MaxExpandBreadth, counted across every
                         // level. Depth alone does not bound translation cost; breadth multiplies on top.
                         IResult? breadthError = QueryOptionGate.ValidateExpandBreadth(
