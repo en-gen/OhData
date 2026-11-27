@@ -9,9 +9,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [1.8.0] - 2026-11-27
+
+1.8.0 is 1.7.0 plus `ConfigureExceptions` and the restore fix below. It has no breaking changes:
+package validation runs against the 1.7.0 packages, targets and dependency ranges are unchanged,
+and upgrading needs no code changes.
+
 ### Added
 
-- **A handler can produce a client error: `ConfigureExceptions` (#581).** Every handler delegate
+- **A handler can produce a client error: `ConfigureExceptions` (#581, #605).** Every handler delegate
   returns a domain type, so user code had exactly two exits — return a value, or throw — and the
   throw exit was hard-wired to `500`. A rejection depending on domain state the framework cannot see
   (*"that SKU already exists"*) had no honest way to reach the client: pretend it succeeded, or
@@ -57,6 +65,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   arguments were still being evaluated, before any wrapper could see it. Found because #581's
   mapping fired on all seven other seams and not on `Delete`. No shipped defect (`AsHandlerFault` is
   not used on that route), but the invariant is now true rather than asserted.
+
+### Fixed
+
+- **`EnGen.OhData.AspNetCore.OpenApi` restores again (#859).** `dotnet restore` failed with NU1605
+  because the package's direct `Microsoft.OpenApi` `[2.12.2, 3.0.0)` reference sat below the
+  `>= 2.13.0` that `Microsoft.AspNetCore.OpenApi` 10.0.15 requires. The direct reference is gone;
+  `Microsoft.OpenApi` now arrives only through `Microsoft.AspNetCore.OpenApi`.
+
+### Build
+
+- **`PackageValidationBaselineVersion` is `1.7.0`** on all five packable projects, so every pack
+  diffs against the 1.7.0 API surface.
 
 ---
 

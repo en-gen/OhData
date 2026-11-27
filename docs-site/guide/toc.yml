@@ -63,6 +63,8 @@
           href: ../../docs/authorization.md
     - name: Advanced
       items:
+        - name: Error handling
+          href: ../../docs/error-handling.md
         - name: API versioning
           href: ../../docs/versioning.md
     - name: Operations

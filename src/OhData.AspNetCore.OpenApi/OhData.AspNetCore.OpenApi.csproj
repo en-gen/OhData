@@ -15,7 +15,7 @@
 		-->
 		<RootNamespace>OhData.AspNetCore.OpenApi</RootNamespace>
 		<EnablePackageValidation>true</EnablePackageValidation>
-		<PackageValidationBaselineVersion>1.6.0</PackageValidationBaselineVersion>
+		<PackageValidationBaselineVersion>1.7.0</PackageValidationBaselineVersion>
 	</PropertyGroup>
 
 	<ItemGroup>

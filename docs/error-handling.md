@@ -7,9 +7,9 @@ flags, property allowlists, deep-write shape — and answers `400` for each. But
 depends on domain state the framework cannot see (*"that SKU already exists"*, *"this transition is
 not allowed"*) is the handler's to report.
 
-Until `ConfigureExceptions`, it could not. Every handler delegate returns a domain type, so a
-handler had exactly two exits — return a value, or throw — and throwing is always a logged `500`.
-The options were to pretend the write succeeded, or to report a server fault for a client error.
+Handler delegates return a domain type, so a handler's own exits are to return a value or to throw,
+and a throw is a logged `500`. `ConfigureExceptions` is the third exit: it maps an exception your
+handler throws to a client error you choose.
 
 ```csharp
 public class OrderProfile : EntitySetProfile<int, Order>
@@ -61,8 +61,7 @@ concurrency needs a way to say so.
 **Name the narrowest exception type that means what you want to report.** A broad mapping reports
 infrastructure failures as client errors, which tells retry logic the opposite of the truth.
 
-This is not hypothetical. The `$expand` pushdown once caught `InvalidOperationException` and
-answered `400`, and it turned out that:
+This is not hypothetical. Treating `InvalidOperationException` as a client error is wrong because:
 
 - SqlClient reports **connection-pool exhaustion** as a plain `InvalidOperationException`
   (*"Timeout expired … max pool size was reached"*),
@@ -75,6 +74,17 @@ So `Map<InvalidOperationException>(…)` would report all three as your chosen c
 
 When several mappings match, **the most derived wins**, whichever order they were declared in — so
 a base mapping plus a specific one behaves the way a `catch` ladder reads.
+
+## Where a mapping applies
+
+A mapping applies to the handlers of a **top-level entity set**: the collection read (`GetAll`,
+`GetQueryable`, `GetODataQueryable`, `Search`, and the `/$count` route's use of them), `GetById`,
+`Post`, `Put` (including the create branch of an upsert), `Patch` (including the single-property
+`PUT` and `DELETE` routes, which call it), and `Delete`. A handler that owns a keyset `$skiptoken` can therefore reject a malformed
+or stale token with a `400` or `409` by throwing a type you map.
+
+Navigation handlers, bound and unbound operations, and the handlers the `$expand` pushdown calls
+are **not** covered: an exception thrown there is an unmapped logged `500`.
 
 ## A mapped exception is still logged
 
@@ -96,7 +106,7 @@ by `Operation`. Switch on that and read what it implies, rather than null-checki
 | `Key` | keyed routes |
 | `Model` | `Post`, `Put` |
 | `Delta` | `Patch` |
-| `Navigation` | navigation seams |
+| `Navigation` | not populated by any route in this release (always `null`) |
 
 There is also a context-free overload — `Map<TException>(ex => …)` — for the common case where the
 rejection does not depend on the request.
