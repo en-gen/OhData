@@ -201,6 +201,71 @@ public class Issue786BoundActionWindowValidationTests
         Assert.True(Za786KindsProfile.Calls == 0, $"{action} {query} status={(int)r.StatusCode} counter={Za786KindsProfile.Calls}");
         Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
     }
+    // DOCUMENTED RESIDUAL (docs/internals/operations.md): an interface that only a collection other
+    // than List<TModel>/TModel[] implements is not recognised from the declared type, so the handler
+    // runs before the 400. Widening the rule would also refuse scalar IComparable/IDisposable returns;
+    // a later change here must be a conscious one.
+    [Fact]
+    public async Task Residual_InterfaceOnlyAUserCollectionImplements_RunsTheHandlerBeforeThe400()
+    {
+        Za786KindsProfile.Calls = 0;
+        await using TestFixture fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Za786KindsProfile>());
+
+        using HttpResponseMessage r = await fx.Client.PostAsync("/odata/Za786Kinds/ListComparable?$top=abc", Json());
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        Assert.Equal(1, Za786KindsProfile.Calls);
+    }
+
+    // With RequireResource on the action, the resource filter loads the entity before the lambda, so
+    // the entity lookup and resource authorization precede the window check.
+    [Theory]
+    [InlineData("alice", "/odata/Za786Res(999)/Touch?$top=abc", null, HttpStatusCode.NotFound)]
+    [InlineData("alice", "/odata/Za786Res(999)/Touch?$top=abc", "W/\"stale\"", HttpStatusCode.NotFound)]
+    [InlineData("bob", "/odata/Za786Res(1)/Touch?$top=abc", null, HttpStatusCode.Forbidden)]
+    [InlineData("alice", "/odata/Za786Res(1)/Touch?$top=abc", null, HttpStatusCode.BadRequest)]
+    [InlineData("alice", "/odata/Za786Res(1)/Touch?$top=abc", "W/\"stale\"", HttpStatusCode.BadRequest)]
+    public async Task RequireResource_RunsBeforeTheWindowCheck(
+        string identity, string path, string? ifMatch, HttpStatusCode expected)
+    {
+        Za786ResourceProfile.Calls = 0;
+        await using TestFixture fx = await ResourceAuthTestHost.BuildAsync(
+            o => o.AddEntitySetProfile<Za786ResourceProfile>());
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, path) { Content = Json() };
+        req.Headers.Add(PerOpAuthHandler.IdentityHeader, identity);
+        if (ifMatch is not null) req.Headers.TryAddWithoutValidation("If-Match", ifMatch);
+        using HttpResponseMessage r = await fx.Client.SendAsync(req);
+
+        Assert.Equal(expected, r.StatusCode);
+        Assert.Equal(0, Za786ResourceProfile.Calls);
+    }
+}
+
+internal sealed class Za786ResourceProfile : EntitySetProfile<int, ResOwnedItem>
+{
+    internal static int Calls;
+
+    public Za786ResourceProfile() : base(x => x.Id)
+    {
+        EntitySetName = "Za786Res";
+        GetById = (id, _) => OhDataResult.Success<ResOwnedItem?>(
+            id == 1 ? new ResOwnedItem { Id = 1, Owner = "alice", Name = "A" } : null);
+        UseETag(x => x.Name);
+        BindEntityAction(Touch);
+        ConfigureAuthorization(a => a.Invoke(i => i.RequireResource()));
+    }
+
+    private static Task<IEnumerable<ResOwnedItem>> Touch(int key)
+    {
+        Interlocked.Increment(ref Calls);
+        return Task.FromResult<IEnumerable<ResOwnedItem>>(new[] { new ResOwnedItem { Id = 1 } });
+    }
+}
+
+internal sealed class Za786ComparableWidgets : List<Za786Widget>, IComparable
+{
+    public int CompareTo(object? obj) => 0;
 }
 
 internal sealed class Za786EtagProfile : EntitySetProfile<int, Za786Widget>
@@ -234,6 +299,7 @@ internal sealed class Za786KindsProfile : EntitySetProfile<int, Za786Widget>
         BindAction(ArchiveVoid);
         BindAction(CountAll);
         BindAction(ListObject);
+        BindAction(ListComparable);
         BindAction(ListReadOnly);
         BindAction(ListCloneable);
         BindAction(ListImmutable);
@@ -260,6 +326,7 @@ internal sealed class Za786KindsProfile : EntitySetProfile<int, Za786Widget>
     private static Task<List<int>> IntList() { Interlocked.Increment(ref Calls); return Task.FromResult(new List<int> { 1 }); }
     private static Task<int[]> IntArray() { Interlocked.Increment(ref Calls); return Task.FromResult(new[] { 1 }); }
     private static Task<IComparable> Comparable() { Interlocked.Increment(ref Calls); return Task.FromResult<IComparable>(3); }
+    private static Task<IComparable> ListComparable() { Interlocked.Increment(ref Calls); return Task.FromResult<IComparable>(new Za786ComparableWidgets { new() { Id = 1 } }); }
     private static Task<Za786Widget> Name(int key) { Interlocked.Increment(ref Calls); return Task.FromResult(new Za786Widget { Id = key, Name = "w" }); }
 }
 

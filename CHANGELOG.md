@@ -812,7 +812,10 @@ status codes or headers.
   so a client that reads a 4xx as "not processed" could retry an action whose side effects had happened. The
   window is now validated before the handler, with the same messages, on collection-bound and entity-bound actions;
   an unauthorized caller still gets `401`/`403` first. Actions whose declared return cannot hold a collection of the
-  set's own type (void, scalar, single-entity, unrelated-element collections) keep accepting `$top`/`$skip` as no-ops. Fixes #786.
+  set's own type (void, scalar, single-entity, unrelated-element collections) keep accepting `$top`/`$skip` as no-ops.
+  **BREAKING for a few shapes:** an action declared `Task<object>`, an `IEnumerable` or another type that can hold the
+  set's collection, which returned a non-collection, now answers `400 InvalidQueryOption` for an invalid
+  `$top`/`$skip` before its handler runs, where it used to succeed; remove the invalid `$top`/`$skip`. Fixes #786.
 
 - **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);

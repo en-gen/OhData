@@ -550,7 +550,9 @@ internal static class QueryOptionGate
     // really can emit a $skip continuation, and deriving the set from the declared type would make
     // the server refuse a link it had just issued. On an action the values are validated before the
     // handler when the declared return type can hold a collection of the set's own type (a collection
-    // of TModel, object, a non-sealed class or interface); other returns accept them as no-ops -- the same answer the /$count routes give, reached by a different road.
+    // of TModel, object, an interface or non-sealed class a List<TModel> or TModel[] is assignable to);
+    // other returns accept them as no-ops -- the same answer the /$count routes give, reached by a
+    // different road.
     internal static readonly string[] s_boundOperationImplementedOptions =
     {
         "$top", "$skip", FormatOption,

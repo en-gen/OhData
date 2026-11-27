@@ -260,9 +260,13 @@ Three things worth knowing:
   `Task<object>` really can produce a `$skip=N` continuation — and refusing the option would mean
   refusing a link the server itself had just issued. On an action the values are validated before the
   handler when its declared return type can hold a collection of the set's own type (a collection of
-  `TModel`, `object`, or a non-sealed class or interface such as `IList` or `ICloneable`); a void,
-  scalar, single-entity or unrelated-element-collection action accepts them as no-ops. On an **unbound** operation there is no collection branch and no continuation,
-  so they are refused.
+  `TModel`, `object`, or an interface or non-sealed class that a `List<TModel>` or `TModel[]` is
+  assignable to, such as `IList` or `ICloneable`); a void, scalar, single-entity or
+  unrelated-element-collection action accepts them as no-ops. An interface or class that only some
+  other collection implements (for example `ISerializable` via a `HashSet<TModel>`) is not
+  recognised from the declared type, so its handler runs before a bad value is refused; declare the
+  collection type or `IEnumerable<TModel>` to get the up-front check. On an **unbound** operation
+  there is no collection branch and no continuation, so they are refused.
 - **The gate runs before parameter binding and before the handler delegate**, so a refused
   **action** invocation provably mutates nothing.
 
