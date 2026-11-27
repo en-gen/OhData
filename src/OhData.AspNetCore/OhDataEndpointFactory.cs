@@ -5569,7 +5569,8 @@ internal static class OhDataEndpointFactory
             {
                 logger?.LogDebug("PUT {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
                 if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
-                bool authorizingCreate = false;
+                // True while user code (handlers, create-auth policies) runs: its JsonException is a server fault.
+                bool runningUserCode = false;
                 try
                 {
                     var s = ResolveHandlers(ctx);
@@ -5726,16 +5727,14 @@ internal static class OhDataEndpointFactory
                         }
                     }
 
+                    runningUserCode = true;
                     object? result = await WithExceptionMapping(s.InvokePutAsync(parsedKey!, model, ct), source, ctx, OhDataOperation.Update, key: parsedKey, model: model);
 
                     // Gap 3: Upsert via PUT (§11.4.4) — create entity when result is null and AllowUpsert enabled
                     bool wasCreated = false;
                     if (result is null && source.AllowUpsert && source.HasPost)
                     {
-                        // A JsonException from a policy handler is a server fault, not a malformed body.
-                        authorizingCreate = true;
                         IResult? upsertCreateAuthFail = await CheckUpsertCreateAuthAsync(ctx, model);
-                        authorizingCreate = false;
                         if (upsertCreateAuthFail is not null) return upsertCreateAuthFail;
                         result = await WithExceptionMapping(s.InvokePostAsync(model, ct), source, ctx, OhDataOperation.Create, model: model);
                         wasCreated = true;
@@ -5776,7 +5775,7 @@ internal static class OhDataEndpointFactory
                         return Results.Created(odataId, ODataEntityNode(ctx, prefix, $"{name}/$entity", result, jsonOptions, registration.EdmModel, odataId: odataId, etag: putEtag, omitNavsForType: rootEdmType));
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, registration.EdmModel, odataId: odataId, etag: putEtag, omitNavsForType: rootEdmType);
                 }
-                catch (JsonException ex) when (!authorizingCreate)
+                catch (JsonException ex) when (!runningUserCode)
                 {
                     return ODataError(400, "InvalidBody", ex.Message);
                 }
@@ -5800,6 +5799,7 @@ internal static class OhDataEndpointFactory
             {
                 logger?.LogDebug("PATCH {Prefix}/{Name}({Key})", prefix, name, SanitizeLogValue(key));
                 if (!IsJsonContentType(ctx)) return UnsupportedMediaTypeError(ctx);
+                bool runningUserCode = false;
                 try
                 {
                     var s = ResolveHandlers(ctx);
@@ -5928,6 +5928,7 @@ internal static class OhDataEndpointFactory
                         ValidateEdmRequiredDelta(edmRequiredProps, patchDelta);
                     if (patchNullabilityFail is not null) return patchNullabilityFail;
 
+                    runningUserCode = true;
                     object? result = await WithExceptionMapping(s.InvokePatchAsync(parsedKey!, patchDelta, ct), source, ctx, OhDataOperation.Update, key: parsedKey, delta: patchDelta);
 
                     string? patchEtag = null;
@@ -5955,7 +5956,7 @@ internal static class OhDataEndpointFactory
                     string odataId = BuildEntityId(ctx, prefix, name, parsedKey!);
                     return ODataEntityResult(ctx, prefix, name, result, jsonOptions, registration.EdmModel, odataId: odataId, etag: patchEtag, omitNavsForType: rootEdmType);
                 }
-                catch (JsonException ex)
+                catch (JsonException ex) when (!runningUserCode)
                 {
                     return ODataError(400, "InvalidBody", ex.Message);
                 }
