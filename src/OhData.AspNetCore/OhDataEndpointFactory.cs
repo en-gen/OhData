@@ -2589,7 +2589,10 @@ internal static class OhDataEndpointFactory
             var data = new ExceptionSeamData(
                 op, ctx.Request.QueryString.HasValue ? ctx.Request.QueryString.Value : null,
                 k, m, d, nav);
-            result = src.TryMapException(ex, in data);
+            // #792: rules close over the profile's constructor state, so run the REQUEST's instance;
+            // the startup one belongs to a scope that is already disposed.
+            var requestSource = (IEntitySetEndpointSource)ctx.RequestServices.GetRequiredService(src.GetType());
+            result = requestSource.TryMapException(ex, in data);
             return result is not null;
         }
     }

@@ -90,6 +90,9 @@ public class OrderProfile : EntitySetProfile<int, Order>
 The framework has **no compile-time dependency on any data-access library** and never will — it does
 not know what `DbUpdateConcurrencyException` is. You name the type; it only maps.
 
+Rules run on the profile instance of the **current request**, so a rule may read anything the profile's
+constructor was given - the scoped `AppDb db` above included - and sees the same instance the handler used.
+
 ## The rejections you can produce
 
 `OhDataResult`'s constructor is private and the factory set is closed, so a status the framework
