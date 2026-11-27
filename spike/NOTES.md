@@ -143,3 +143,9 @@ Smoke only: with `--gen0-mb 4` gen0 counts rose to 10-25 per cell (knob verified
 GetQueryable 10k rows: 328/494/855 MB at 8/16/32) while streamed stayed 144-164 MB, and no cell OOMed
 [EST, smoke, not a measurement]. Fixture fix: the EF host now uses a named shared-cache SQLite DB so
 concurrent requests do not share one connection (the first sanity smoke showed HTTP 500s from that, not OOM).
+
+## Corrections after verification and adversarial review (supersede the text above where they conflict)
+- Finding A ("allocation nearly identical") is wrong for the full probe runs: see spike/results-prelim (EF 10k 21.2 MB vs 13.2 MB per request). The smoke figures came from a different harness mode.
+- In-stream error conformance depends on the OData version: 4.0 section 9.4 requires an error in the payload; 4.01 section 9.5 requires a malformed response. OhData sends OData-Version 4.0. The in-band valid-JSON mode (c) is not "verified non-conformant" for 4.0.
+- nextLink member order is spec-permitted (JSON 4.01 section 4.4; 4.0 only under streaming=true).
+- Max-promoted and gen counts under the 4 MB gen0 knob are harness-sensitive; the 1 GiB concurrency runs are the stronger memory evidence.
