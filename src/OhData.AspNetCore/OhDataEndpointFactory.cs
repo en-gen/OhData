@@ -7407,8 +7407,11 @@ internal static class OhDataEndpointFactory
 
                 // #786: $top/$skip/MaxTop are checked here, after the endpoint's authorization and
                 // before any user code, so a 400 never follows a side effect.
-                if (!BoundOperationResults.TryValidateOperationWindow(ctx, source, out _, out _, out IResult? windowError))
+                if (BoundOperationResults.MayReturnCollectionOf<TModel>(actionCapture)
+                    && !BoundOperationResults.TryValidateOperationWindow(ctx, source, out _, out _, out IResult? windowError))
+                {
                     return windowError!;
+                }
 
                 var s = ResolveHandlers(ctx);
                 var requestAction = s.BoundActions.First(a => a.Name == actionCapture.Name && !a.IsEntityLevel);
@@ -7589,8 +7592,11 @@ internal static class OhDataEndpointFactory
                         if (opUnsupported is not null) return opUnsupported;
 
                         // #786: see the collection-bound action above.
-                        if (!BoundOperationResults.TryValidateOperationWindow(ctx, source, out _, out _, out IResult? windowError))
+                        if (BoundOperationResults.MayReturnCollectionOf<TModel>(actionCapture)
+                            && !BoundOperationResults.TryValidateOperationWindow(ctx, source, out _, out _, out IResult? windowError))
+                        {
                             return windowError!;
+                        }
 
                         var s = ResolveHandlers(ctx);
                         var requestAction = s.BoundActions.First(a => a.Name == actionCapture.Name && a.IsEntityLevel);
