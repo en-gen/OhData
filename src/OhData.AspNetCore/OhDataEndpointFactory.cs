@@ -5928,11 +5928,12 @@ internal static class OhDataEndpointFactory
                     // #355: only the properties this body NAMED are in the delta, so this is exactly
                     // the "client explicitly sent null for a Nullable='false' property" case — a
                     // partial update that omits the property is untouched.
+                    // It reads model getters, so it runs as user code.
+                    runningUserCode = true;
                     IResult? patchNullabilityFail =
                         ValidateEdmRequiredDelta(edmRequiredProps, patchDelta);
                     if (patchNullabilityFail is not null) return patchNullabilityFail;
 
-                    runningUserCode = true;
                     object? result = await WithExceptionMapping(s.InvokePatchAsync(parsedKey!, patchDelta, ct), source, ctx, OhDataOperation.Update, key: parsedKey, delta: patchDelta);
 
                     string? patchEtag = null;
