@@ -50,6 +50,7 @@ public static class Program
         {
             typeof(ServerComparisonBenchmarks),
             typeof(ExpandComparisonBenchmarks),
+            typeof(NavCountBenchmarks),
             // #389: not a host-vs-host comparison at all — one JsonSerializer call, no HTTP. It
             // rides this switcher anyway because it needs the same OhData.AspNetCore project
             // reference and the same pinned-invocation-count discipline.

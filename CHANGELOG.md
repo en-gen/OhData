@@ -807,6 +807,16 @@ status codes or headers.
 
 ### Fixed
 
+- **⚠ BREAKING CHANGE — `@odata.count` on a navigation collection is the full related set, and an invalid `$count` is a `400` (#354).**
+  `GET /{Set}({key})/{Nav}?$count=true&$skip=N` reported the count after `$skip`, so it was short by N, and
+  `$count=True`/`1`/`yes` were compared ordinally and silently dropped under a `200` where `GET /{Set}` answers `400`.
+  The count is now taken after `$orderby` and before `$skip`/`$top`, and `$count` is parsed by the same Microsoft
+  parser as the collection route, before the navigation delegate runs. `GET /{Set}({key})/{Nav}?$count=1`
+  (also `True`, `TRUE`, `yes`) therefore goes from `200` with the option ignored to `400 InvalidQueryOption`.
+  **Remedy: use `$count=true`, `$count=false`, or omit `$count`.** An empty `$orderby=` together with
+  `$count` on a navigation collection also goes from `200` to `400` (#899), matching the collection route;
+  an empty `$top=`/`$skip=` with `$count` was already `400` and now answers it before the navigation delegate runs.
+
 - **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
   they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`
