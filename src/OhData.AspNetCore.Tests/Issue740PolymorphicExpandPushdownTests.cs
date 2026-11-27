@@ -97,7 +97,9 @@ public sealed class V740ParentProfile : EntitySetProfile<int, V740Parent>
         OrderByEnabled = true;
         FilterEnabled = true;
         GetQueryable = () => db.Parents.AsQueryable();
-        GetById = (id, _) => OhDataResult.Success(db.Parents.FirstOrDefault(p => p.Id == id));
+        // GetById never rides the pushdown: the delegate loads the graph it wants served.
+        GetById = (id, _) => OhDataResult.Success(
+            db.Parents.Include(p => p.Kids).Include(p => p.Best).FirstOrDefault(p => p.Id == id));
         HasMany(x => x.Kids);
         HasOptional(x => x.Best!);
     }

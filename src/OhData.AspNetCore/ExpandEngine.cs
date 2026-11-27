@@ -2855,6 +2855,9 @@ internal static class ExpandEngine
         {
             (Type elementType, IEdmModel model) = key;
             if (elementType.GetConstructor(Type.EmptyTypes) is null) return false;
+            // #740 (same defect as #529, one level down): a member-init rebuilds a TPH-derived child as the
+            // declared type, dropping derived members and @odata.type, so a polymorphic target is not projectable.
+            if (HasDerivedEntityTypes(model, elementType)) return false;
             // #508: EdmClrTypeMap, not model.FindDeclaredType(elementType.FullName) — the latter
             // matches on the EDM type's full name, so on a renamed schema it answered null for every
             // element type, this method answered false for every element type, and TryBuildEngagedExpand
