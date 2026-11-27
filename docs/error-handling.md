@@ -90,8 +90,8 @@ public class OrderProfile : EntitySetProfile<int, Order>
 The framework has **no compile-time dependency on any data-access library** and never will — it does
 not know what `DbUpdateConcurrencyException` is. You name the type; it only maps.
 
-Rules run on the profile instance of the **current request**, so a rule may read anything the profile's
-constructor was given - the scoped `AppDb db` above included - and sees the same instance the handler used.
+Rules declared in the profile's constructor run on the profile instance of the **current request**, so such a rule may read anything the profile's
+constructor was given - the scoped `AppDb db` above included - and sees the same instance the handler used. A rule declared in `AdvancedConfigure` runs on the startup instance and must not read request-scoped state.
 
 ## The rejections you can produce
 
