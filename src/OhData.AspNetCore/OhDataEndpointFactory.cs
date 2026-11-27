@@ -4983,7 +4983,26 @@ internal static class OhDataEndpointFactory
                     if (s is IODataEntitySetEndpointSource odataCountSrc && odataCountSrc.HasGetODataQueryable)
                     {
                         // Priority 1 profiles apply query options themselves; don't re-apply $filter.
-                        var countResult = await AsHandlerFault(WithExceptionMapping(odataCountSrc.InvokeGetODataQueryableAsync(options, ct), source, ctx, OhDataOperation.Read));
+                        // #748: MS's ApplyTo skips $top/$skip only for a count request, which needs the
+                        // path set BEFORE construction (it synthesises $count then), so rebuild once.
+                        var feature = Microsoft.AspNetCore.OData.Extensions.HttpContextExtensions.ODataFeature(ctx);
+                        var priorPath = feature.Path;
+                        feature.Path = new ODataPath(CountSegment.Instance);
+                        ODataQueryResult<object> countResult;
+                        try
+                        {
+                            if (!TryBuildQueryOptions<TModel>(registration.EdmModel, ctx, logger,
+                                    out ODataQueryOptions<TModel>? countOptions, out optionsError))
+                            {
+                                return optionsError;
+                            }
+
+                            countResult = await AsHandlerFault(WithExceptionMapping(odataCountSrc.InvokeGetODataQueryableAsync(countOptions, ct), source, ctx, OhDataOperation.Read));
+                        }
+                        finally
+                        {
+                            feature.Path = priorPath;
+                        }
                         var queryable = countResult.Items is IQueryable<TModel> tq
                             ? tq
                             : countResult.Items.Cast<TModel>().AsQueryable();
