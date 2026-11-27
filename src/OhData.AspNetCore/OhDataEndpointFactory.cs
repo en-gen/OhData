@@ -2589,9 +2589,10 @@ internal static class OhDataEndpointFactory
             var data = new ExceptionSeamData(
                 op, ctx.Request.QueryString.HasValue ? ctx.Request.QueryString.Value : null,
                 k, m, d, nav);
-            // #792: rules close over the profile's constructor state, so run the REQUEST's instance;
-            // the startup one belongs to a scope that is already disposed.
+            // #792: rules close over constructor state, so run the REQUEST's instance (the startup scope is
+            // disposed). Rules added in AdvancedConfigure exist only on the startup one: fall back to it.
             var requestSource = (IEntitySetEndpointSource)ctx.RequestServices.GetRequiredService(src.GetType());
+            if (!requestSource.HasExceptionMappings) requestSource = src;
             result = requestSource.TryMapException(ex, in data);
             return result is not null;
         }
