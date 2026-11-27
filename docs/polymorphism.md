@@ -81,7 +81,7 @@ except in the ways below.
 
 | | |
 |---|---|
-| `$filter`, `$orderby`, `$top`, `$skip`, `$count` | unchanged |
+| `$filter`, `$orderby`, `$select`, `$top`, `$skip`, `$count` | unchanged |
 | `$select` beside `$expand` of a polymorphic type | yes — the navigation stays populated, with derived members and `@odata.type` |
 | `$expand=Nav` | yes — a filtered `Include` |
 | `$expand=Nav($filter=…;$orderby=…;$top=…)` | yes, pushed to SQL |
@@ -90,8 +90,9 @@ except in the ways below.
 
 ### What does not
 
-**`$levels` is refused with `400` only when it is under a polymorphic target** (including a
-polymorphic root, whose self-reference is one). The projection path serves `$levels` by emitting a
+**`$levels` is refused with `400` when it is under a polymorphic root or a polymorphic target.** A
+`$levels` branch beside a polymorphic expand, on a non-polymorphic self-reference under a non-polymorphic
+root, is served (below). The projection path serves `$levels` by emitting a
 `Select` per level, which a filtered `Include` does not accept, and a polymorphic target cannot take
 the projection. The error names `$levels` specifically.
 

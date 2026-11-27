@@ -31,6 +31,27 @@ public sealed class Z740Special : Z740Kid
     public string Sparkle { get; set; } = "";
 }
 
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "$kind")]
+[JsonDerivedType(typeof(Z740RDerived), "d")]
+public class Z740RPoly
+{
+    public int Id { get; set; }
+    public List<Z740Cat> Cats { get; set; } = new();
+}
+
+public sealed class Z740RDerived : Z740RPoly
+{
+    public string Extra { get; set; } = "";
+}
+
+public sealed class Z740Cat
+{
+    public int Id { get; set; }
+    public int? RPolyId { get; set; }
+    public int? CatOfId { get; set; }
+    public List<Z740Cat> Children { get; set; } = new();
+}
+
 public sealed class Z740Parent
 {
     public int Id { get; set; }
@@ -45,6 +66,8 @@ public sealed class Z740Db : DbContext
     public Z740Db(DbContextOptions<Z740Db> o) : base(o) { }
     public DbSet<Z740Parent> Parents => Set<Z740Parent>();
     public DbSet<Z740Kid> Kids => Set<Z740Kid>();
+    public DbSet<Z740RPoly> RPolys => Set<Z740RPoly>();
+    public DbSet<Z740Cat> Cats => Set<Z740Cat>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -52,6 +75,9 @@ public sealed class Z740Db : DbContext
         b.Entity<Z740Parent>().HasMany(p => p.Subs).WithOne().HasForeignKey(p => p.SuperId);
         b.Entity<Z740Kid>().HasMany(k => k.Buddies).WithOne().HasForeignKey(k => k.BuddyOfId);
         b.Entity<Z740Special>();
+        b.Entity<Z740RPoly>().HasMany(r => r.Cats).WithOne().HasForeignKey(c => c.RPolyId);
+        b.Entity<Z740Cat>().HasMany(c => c.Children).WithOne().HasForeignKey(c => c.CatOfId);
+        b.Entity<Z740RDerived>();
     }
 }
 
@@ -67,6 +93,19 @@ public sealed class Z740ParentProfile : EntitySetProfile<int, Z740Parent>
         GetQueryable = () => db.Parents.AsQueryable();
         HasMany(x => x.Kids);
         HasMany(x => x.Subs);
+    }
+}
+
+public sealed class Z740RPolyProfile : EntitySetProfile<int, Z740RPoly>
+{
+    public Z740RPolyProfile(Z740Db db) : base(x => x.Id)
+    {
+        EntitySetName = "RPolys";
+        ExpandEnabled = true;
+        FilterEnabled = true;
+        OrderByEnabled = true;
+        GetQueryable = () => db.RPolys.AsQueryable();
+        HasMany(x => x.Cats);
     }
 }
 
@@ -98,6 +137,7 @@ public sealed class Issue740LevelsBesidePolymorphicTests
             {
                 b.AddEntitySetProfile<Z740ParentProfile>();
                 b.AddEntitySetProfile<Z740KidProfile>();
+                b.AddEntitySetProfile<Z740RPolyProfile>();
             },
             configureServices: s => s.AddDbContext<Z740Db>(o => o.UseSqlite(connection)));
 
@@ -117,6 +157,12 @@ public sealed class Issue740LevelsBesidePolymorphicTests
         db.Parents.Add(new Z740Parent { Id = 10, Tag = "root2" });
         db.SaveChanges();
 
+        db.RPolys.Add(new Z740RDerived { Id = 1, Extra = "X" });
+        db.SaveChanges();
+        db.Cats.Add(new Z740Cat { Id = 1, RPolyId = 1 });
+        db.SaveChanges();
+        db.Cats.Add(new Z740Cat { Id = 2, CatOfId = 1 });
+        db.SaveChanges();
         db.Kids.Add(new Z740Kid { Id = 1, ParentId = 1, Name = "plain" });
         db.Kids.Add(new Z740Special { Id = 2, ParentId = 1, Name = "special", Sparkle = "SP" });
         db.SaveChanges();
@@ -239,5 +285,37 @@ public sealed class Issue740LevelsBesidePolymorphicTests
 
         Assert.Equal(HttpStatusCode.BadRequest, status);
         Assert.Contains("$levels", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task LevelsOnANonPolymorphicSelfReference_UnderAPolymorphicRoot_StillAnswers400()
+    {
+        // The root is polymorphic, so the projection is ineligible for a reason that is not the polymorphic
+        // target; the sibling-$levels relaxation must not apply and the #529 refusal stands.
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection);
+
+        (HttpStatusCode status, string body) = await GetAsync(fx, "RPolys?$expand=Cats($expand=Children($levels=2))");
+
+        Assert.Equal(HttpStatusCode.BadRequest, status);
+        Assert.Contains("$levels", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task NestedFilterOnAPolymorphicSelfReference_ExcludesTheFilteredRow()
+    {
+        // Row 4 is also a root of this query; develop leaked it into kid 3's Buddies through tracked
+        // relationship fixup, so the Include path reads untracked.
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        await using TestFixture fx = await BuildAsync(connection);
+
+        (HttpStatusCode status, string body) = await GetAsync(fx, "ZKids?$orderby=Id&$expand=Buddies($filter=Id ne 4)");
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        JsonElement kid3 = JsonDocument.Parse(body).RootElement.GetProperty("value").EnumerateArray()
+            .Single(k => k.GetProperty("Id").GetInt32() == 3);
+        Assert.Equal(0, kid3.GetProperty("Buddies").GetArrayLength());
     }
 }
