@@ -74,6 +74,34 @@ public sealed class I792P1Profile : ODataEntitySetProfile<int, I792Thing>
     }
 }
 
+/// <summary>The rule is declared in AdvancedConfigure, which runs only on the startup instance.</summary>
+public sealed class I792AdvancedProfile : EntitySetProfile<int, I792Thing>
+{
+    public I792AdvancedProfile() : base(x => x.Id)
+    {
+        EntitySetName = "I792Advanced";
+        Post = (m, _) => throw new I792Boom();
+    }
+
+    protected override void AdvancedConfigure(Microsoft.OData.ModelBuilder.EntitySetConfiguration<I792Thing> configuration)
+    {
+        ConfigureExceptions(e => e.Map<I792Boom>(_ => OhDataResult.Conflict("Mapped", "advanced")));
+    }
+}
+
+public sealed class I792GetAllProfile : EntitySetProfile<int, I792Thing>
+{
+    public static readonly ConcurrentQueue<Guid> Seen = new();
+
+    public I792GetAllProfile(I792Scoped scoped) : base(x => x.Id)
+    {
+        EntitySetName = "I792GetAll";
+        GetAll = _ => { Seen.Enqueue(scoped.Id); throw new I792Boom(); };
+        ConfigureExceptions(e => e.Map<I792Boom>((c, ex) =>
+            OhDataResult.Conflict("Mapped", "scope=" + scoped.Id)));
+    }
+}
+
 public sealed class I792StatelessProfile : EntitySetProfile<int, I792Thing>
 {
     public I792StatelessProfile() : base(x => x.Id)
@@ -106,7 +134,7 @@ public sealed class Issue792ExceptionRuleScopeTests
     }
 
     private static Task<TestFixture> BuildScopedAsync() => TestHostBuilder.BuildAsync(
-        o => { o.AddEntitySetProfile<I792ScopedProfile>(); o.AddEntitySetProfile<I792P1Profile>(); },
+        o => { o.AddEntitySetProfile<I792ScopedProfile>(); o.AddEntitySetProfile<I792P1Profile>(); o.AddEntitySetProfile<I792GetAllProfile>(); },
         configureServices: s => s.AddScoped<I792Scoped>());
 
     [Fact]
@@ -182,5 +210,29 @@ public sealed class Issue792ExceptionRuleScopeTests
 
         Assert.Equal(HttpStatusCode.Conflict, status);
         Assert.Equal("plain", message);
+    }
+
+    [Fact]
+    public async Task RuleSeesTheRequestScope_OnAGetAllCollectionRead()
+    {
+        await using var fx = await BuildScopedAsync();
+        I792GetAllProfile.Seen.Clear();
+
+        var (status, message) = await SendAsync(fx, HttpMethod.Get, "/odata/I792GetAll");
+
+        Assert.Equal(HttpStatusCode.Conflict, status);
+        Guid handlerId = Assert.Single(I792GetAllProfile.Seen.ToArray());
+        Assert.Equal("scope=" + handlerId, message);
+    }
+
+    [Fact]
+    public async Task ARuleDeclaredInAdvancedConfigure_StillMaps()
+    {
+        await using var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<I792AdvancedProfile>());
+
+        var (status, message) = await SendAsync(fx, HttpMethod.Post, "/odata/I792Advanced", "{\"Id\":1,\"Name\":\"n\"}");
+
+        Assert.Equal(HttpStatusCode.Conflict, status);
+        Assert.Equal("advanced", message);
     }
 }
