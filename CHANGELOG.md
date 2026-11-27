@@ -807,6 +807,12 @@ status codes or headers.
 
 ### Fixed
 
+- **`@odata.count` on a navigation collection is the full related set, and an invalid `$count` is a `400` (#354).**
+  `GET /{Set}({key})/{Nav}?$count=true&$skip=N` reported the count after `$skip`, so it was short by N, and
+  `$count=True`/`1`/`yes` were compared ordinally and silently dropped under a `200` where `GET /{Set}` answers `400`.
+  The count is now taken after `$orderby` and before `$skip`/`$top`, and `$count` is parsed by the same Microsoft
+  parser as the collection route, before the navigation delegate runs.
+
 - **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
   they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`

@@ -6343,6 +6343,26 @@ internal static class OhDataEndpointFactory
                         IResult? navCapabilityError = QueryOptionGate.CheckNavUnsupportedQueryOptions(ctx, navIsCollection);
                         if (navCapabilityError is not null) return navCapabilityError;
 
+                        // #354: $count is read through the same MS parser as the collection route, so an
+                        // invalid value is a 400 before the navigation delegate runs.
+                        bool navWantsCount = false;
+                        if (navIsCollection && ctx.Request.Query.ContainsKey("$count"))
+                        {
+                            if (!TryBuildQueryOptions<TModel>(registration.EdmModel, ctx, logger,
+                                    out ODataQueryOptions<TModel>? navCountOptions, out IResult? navCountOptionsError))
+                            {
+                                return navCountOptionsError;
+                            }
+                            try
+                            {
+                                navWantsCount = navCountOptions.Count?.Value == true;
+                            }
+                            catch (Microsoft.OData.ODataException ex)
+                            {
+                                return ODataError(400, "InvalidQueryOption", ex.Message);
+                            }
+                        }
+
                         var s = ResolveHandlers(ctx);
                         var requestNav = s.NavigationRoutes.First(n => n.PropertyName == navPropertyName);
                         object? parsedKey = ODataKeyParser.Parse(key, typeof(TKey));
@@ -6368,6 +6388,9 @@ internal static class OhDataEndpointFactory
                                 items = orderedItems!;
                             }
 
+                            // #354: the count is of the full related set, taken before $skip/$top (§11.2.6.5).
+                            long? navCount = navWantsCount ? items.LongCount() : null;
+
                             // m8: an invalid (non-numeric or negative) $skip/$top must 400, not be
                             // silently ignored (which would return the full, un-paged collection).
                             // Consistent with the collection GET route's $top/$skip validation.
@@ -6379,14 +6402,6 @@ internal static class OhDataEndpointFactory
                                         $"The value of '$skip' ('{skipStr}') is invalid. It must be a non-negative integer.");
                                 }
                                 if (skipVal > 0) items = items.Skip(skipVal);
-                            }
-
-                            long? navCount = null;
-                            if (ctx.Request.Query.TryGetValue("$count", out var countVal)
-                                && countVal == "true")
-                            {
-                                // Count before $top is applied (per OData spec)
-                                navCount = items.LongCount();
                             }
 
                             if (ctx.Request.Query.TryGetValue("$top", out var topStr))
