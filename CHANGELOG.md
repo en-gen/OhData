@@ -807,6 +807,7 @@ status codes or headers.
 
 ### Fixed
 
+- **`ConfigureExceptions` rules declared in the constructor run on the request's profile instance (#792).** They ran on the startup-scope instance, whose scope was already disposed: a rule reading a scoped service saw a stale object and one touching an injected `DbContext` answered `500` instead of the mapped status. Rules declared in `AdvancedConfigure` still run on the startup instance and must not read request state.
 - **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
   they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`
