@@ -191,5 +191,123 @@ public class Issue863HandlerJsonExceptionTests
         using var doc = JsonDocument.Parse(body);
         Assert.Equal("InternalServerError", doc.RootElement.GetProperty("error").GetProperty("code").GetString());
         Assert.DoesNotContain(Issue863EtagProfile.GetByIdMessage, body);
+        Assert.Equal(new[] { 0, 0 }, Issue863EtagProfile.Calls);
+    }
+
+    private static async Task<TestFixture> BuildFaultHostAsync()
+    {
+        var fx = await TestHostBuilder.BuildAsync(o => o.AddEntitySetProfile<Issue863FaultProfile>());
+        Issue863Faults.Reset();
+        Assert.Equal(HttpStatusCode.OK, (await fx.Client.GetAsync("/odata/Issue863Faults")).StatusCode); // builds the registration
+        return fx;
+    }
+
+    private static HttpRequestMessage Write(string method, string key, string? ifMatch = null)
+    {
+        string payload = method == "PUT" ? "{\"id\":" + key + ",\"name\":\"x\"}" : "{\"name\":\"x\"}";
+        var request = new HttpRequestMessage(new HttpMethod(method), "/odata/Issue863Faults(" + key + ")") { Content = Json(payload) };
+        if (ifMatch is not null) request.Headers.TryAddWithoutValidation("If-Match", ifMatch);
+        return request;
+    }
+
+    private static async Task AssertGenericServerFault(HttpResponseMessage response, string message)
+    {
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        using var doc = JsonDocument.Parse(body);
+        Assert.Equal("InternalServerError", doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.DoesNotContain(message, body);
+    }
+
+    [Fact]
+    public async Task ProfileConstructorJsonException_OnPutAndPatch_Is500_LikeThePost()
+    {
+        await using var fx = await BuildFaultHostAsync();
+        try
+        {
+            Issue863Faults.Ctor = true;
+            var post = await fx.Client.PostAsync("/odata/Issue863Faults", Json("{\"id\":5,\"name\":\"x\"}"));
+            var put = await fx.Client.SendAsync(Write("PUT", "1"));
+            var patch = await fx.Client.SendAsync(Write("PATCH", "1"));
+
+            await AssertGenericServerFault(post, Issue863Faults.CtorMessage);
+            await AssertGenericServerFault(put, Issue863Faults.CtorMessage);
+            await AssertGenericServerFault(patch, Issue863Faults.CtorMessage);
+            Assert.Equal(await post.Content.ReadAsStringAsync(), await put.Content.ReadAsStringAsync());
+            Assert.Equal(await post.Content.ReadAsStringAsync(), await patch.Content.ReadAsStringAsync());
+        }
+        finally { Issue863Faults.Reset(); }
+    }
+
+    [Fact]
+    public async Task KeyGetterJsonException_AfterBinding_OnPut_Is500()
+    {
+        await using var fx = await BuildFaultHostAsync();
+        try
+        {
+            Issue863Faults.Key = true;
+            await AssertGenericServerFault(await fx.Client.SendAsync(Write("PUT", "1")), Issue863Faults.GetterMessage);
+        }
+        finally { Issue863Faults.Reset(); }
+    }
+
+    [Theory]
+    [InlineData("PUT")]
+    [InlineData("PATCH")]
+    public async Task ResponseSerializationJsonException_Is500(string method)
+    {
+        await using var fx = await BuildFaultHostAsync();
+        try
+        {
+            Issue863Faults.Serialize = true;
+            await AssertGenericServerFault(await fx.Client.SendAsync(Write(method, "1")), Issue863Faults.GetterMessage);
+        }
+        finally { Issue863Faults.Reset(); }
+    }
+
+    [Theory]
+    [InlineData("PUT")]
+    [InlineData("PATCH")]
+    public async Task EtagSelectorJsonException_Is500(string method)
+    {
+        await using var fx = await BuildFaultHostAsync();
+        try
+        {
+            Issue863Faults.Tag = true;
+            await AssertGenericServerFault(await fx.Client.SendAsync(Write(method, "1", "\"abc\"")), Issue863Faults.GetterMessage);
+        }
+        finally { Issue863Faults.Reset(); }
+    }
+}
+
+internal static class Issue863Faults
+{
+    public const string CtorMessage = "profile ctor payload bad";
+    public const string GetterMessage = "getter payload bad";
+    public static volatile bool Ctor, Key, Tag, Serialize;
+    public static void Reset() { Ctor = false; Key = false; Tag = false; Serialize = false; }
+}
+
+internal sealed class Issue863FaultItem
+{
+    private int _id;
+    public int Id { get => Issue863Faults.Key ? throw new JsonException(Issue863Faults.GetterMessage) : _id; set => _id = value; }
+    public string Name { get; set; } = "";
+    public int Tag => Issue863Faults.Tag ? throw new JsonException(Issue863Faults.GetterMessage) : 1;
+    public int Extra => Issue863Faults.Serialize ? throw new JsonException(Issue863Faults.GetterMessage) : 1;
+}
+
+internal sealed class Issue863FaultProfile : EntitySetProfile<int, Issue863FaultItem>
+{
+    public Issue863FaultProfile() : base(x => x.Id)
+    {
+        if (Issue863Faults.Ctor) throw new JsonException(Issue863Faults.CtorMessage);
+        EntitySetName = "Issue863Faults";
+        UseETag(x => x.Tag);
+        GetAll = ct => OhDataResult.Success<System.Collections.Generic.IEnumerable<Issue863FaultItem>>(Array.Empty<Issue863FaultItem>());
+        GetById = (id, ct) => OhDataResult.Success<Issue863FaultItem?>(new Issue863FaultItem { Name = "n" });
+        Post = (m, ct) => OhDataResult.Success(m);
+        Put = (id, m, ct) => OhDataResult.Success<Issue863FaultItem?>(new Issue863FaultItem { Name = "n" });
+        Patch = (id, d, ct) => OhDataResult.Success<Issue863FaultItem?>(new Issue863FaultItem { Name = "n" });
     }
 }
