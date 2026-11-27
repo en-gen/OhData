@@ -4265,6 +4265,18 @@ internal static class ExpandEngine
     private static void CollectExpandPaths(
         EngagedExpand node, List<EngagedExpand> prefix, List<IReadOnlyList<EngagedExpand>> paths)
     {
+        if (node.Levels > 0)
+        {
+            // #740: $levels=N is N chained copies of the self-navigation (the budget is already resolved
+            // by ResolveLevelsBudget), each carrying the same options, exactly as ProcessLevels rewrites
+            // it for the projection path. A $levels item has no nested $expand, so the chain is a leaf.
+            int start = prefix.Count;
+            for (int i = 0; i < node.Levels; i++) prefix.Add(node with { Children = null });
+            paths.Add(prefix.ToArray());
+            prefix.RemoveRange(start, node.Levels);
+            return;
+        }
+
         prefix.Add(node);
         if (node.Children is { Count: > 0 })
         {
@@ -4407,6 +4419,22 @@ internal static class ExpandEngine
         IEdmModel model, int? maxExpandTop, ODataQuerySettings binderSettings)
         where TModel : class
     {
+        // #740: when an expand reaches a polymorphic target the rows are read untracked. Tracked
+        // queries run relationship fixup across everything they load, so a row that a filtered Include
+        // excluded can still be wired back into the collection by fixup when another path loaded it
+        // (a self-referential $levels branch loads the same rows as roots). Reads never save, and the
+        // serializer works on the materialized graph, so nothing needs the change tracker.
+        if (ReachesPolymorphicTarget(engaged, model)
+            && includeMethod.DeclaringType?.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .FirstOrDefault(m => m.Name == "AsNoTracking" && m.IsGenericMethodDefinition
+                    && m.GetGenericArguments().Length == 1 && m.GetParameters().Length == 1
+                    && m.GetParameters()[0].ParameterType.IsGenericType
+                    && m.GetParameters()[0].ParameterType.GetGenericTypeDefinition() == typeof(IQueryable<>))
+            is { } asNoTracking)
+        {
+            query = (IQueryable<TModel>)InvokeUnwrapped(asNoTracking.MakeGenericMethod(typeof(TModel)), query);
+        }
+
         var paths = new List<IReadOnlyList<EngagedExpand>>();
         foreach (EngagedExpand e in engaged)
         {
@@ -4433,7 +4461,11 @@ internal static class ExpandEngine
                 // collection throws "Translating this query requires the SQL APPLY operation, which is
                 // not supported on SQLite"; Where/OrderBy on the parent translates.
                 NavShapeBindings bound = BindNavShape(e.Filter, e.OrderBy, e.Binding.ElementType, model, binderSettings);
-                access = ApplyNavShape(access, e, e.Binding.ElementType, model, bound, maxExpandTop);
+                // A $levels copy defers $skip/$top and the MaxExpandTop bound to the JSON pass at every
+                // level, as BuildLevelsNavAccess does for the projection path.
+                access = e.Levels > 0
+                    ? ApplyNavShape(access, e, e.Binding.ElementType, model, bound, maxExpandTop: null, deferPagingToJson: true)
+                    : ApplyNavShape(access, e, e.Binding.ElementType, model, bound, maxExpandTop);
             }
 
             LambdaExpression lambda = Expression.Lambda(access, owner);
@@ -4450,8 +4482,10 @@ internal static class ExpandEngine
                 {
                     NavShapeBindings childBound =
                         BindNavShape(child.Filter, child.OrderBy, child.Binding.ElementType, model, binderSettings);
-                    childAccess = ApplyNavShape(
-                        childAccess, child, child.Binding.ElementType, model, childBound, maxExpandTop);
+                    childAccess = child.Levels > 0
+                        ? ApplyNavShape(childAccess, child, child.Binding.ElementType, model, childBound,
+                            maxExpandTop: null, deferPagingToJson: true)
+                        : ApplyNavShape(childAccess, child, child.Binding.ElementType, model, childBound, maxExpandTop);
                 }
 
                 // The overload follows the PREVIOUS navigation's shape, not the child's.

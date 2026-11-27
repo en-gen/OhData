@@ -90,10 +90,16 @@ except in the ways below.
 
 ### What does not
 
-**`$levels` is refused with `400` only when it is under a polymorphic target.** A `$levels` branch beside a polymorphic expand is served. Its depth is decided per request by the data, so there is no
-statically-known nesting to build an `Include` chain from — and the projection path serves it by
-emitting a `Select` per level, which a filtered `Include` does not accept. The error names `$levels`
-specifically.
+**`$levels` is refused with `400` only when it is under a polymorphic target** (including a
+polymorphic root, whose self-reference is one). The projection path serves `$levels` by emitting a
+`Select` per level, which a filtered `Include` does not accept, and a polymorphic target cannot take
+the projection. The error names `$levels` specifically.
+
+A `$levels` branch on a non-polymorphic self-reference **beside** a polymorphic expand is served: the
+requested depth is unrolled into chained `ThenInclude` calls, each level carrying the same
+`$filter`/`$orderby`, with `$skip`/`$top`, `$count` and `$select` applied to the result exactly as on the
+projection path. Such a request is read untracked, so a row a level's `$filter` excluded cannot be wired
+back in by change-tracker fixup.
 
 **A very deep nested `$expand` may hit a provider limit** that the projection path would not. A
 windowed parent collection beside a nested collection requires `SQL APPLY`, which SQLite cannot emit;

@@ -813,7 +813,7 @@ status codes or headers.
   same row from its own entity set kept both (#529 fixed the root only). A request whose expand reaches a
   polymorphic target at any depth is now served through EF Core `Include`/`ThenInclude`; requests with no
   polymorphic target keep the projected single statement. `$levels` answers the #529
-  `400` only when it is under a polymorphic target, and `$select` beside such an expand keeps the navigation populated. The Include path's `ThenInclude` also picks its overload by the previous navigation's shape, so a
+  `400` only when it is under a polymorphic target; a `$levels` branch on a non-polymorphic self-reference beside a polymorphic expand is served at its full requested depth, and `$select` beside such an expand keeps the navigation populated. The Include path's `ThenInclude` also picks its overload by the previous navigation's shape, so a
   reference navigation with a nested collection (and the reverse) no longer answers `500` (#900).
 - **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);

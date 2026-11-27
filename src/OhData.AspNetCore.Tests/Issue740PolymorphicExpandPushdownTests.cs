@@ -506,14 +506,19 @@ public sealed class Issue740PolymorphicExpandPushdownTests
         connection.Open();
         await using TestFixture fx = await BuildAsync(connection);
 
-        JsonElement parent = ById((await GetJsonAsync(fx, "/odata/Parents?$expand=Kids,Subs($levels=2)"))
-            .GetProperty("value"), 1);
+        // A root filter leaves rows 2 and 3 out of the root set, so they can only arrive through the
+        // levels branch itself.
+        JsonElement parent = (await GetJsonAsync(fx,
+            "/odata/Parents?$filter=Id eq 1&$expand=Kids,Subs($levels=3)")).GetProperty("value")[0];
 
         AssertSpecial(ById(parent.GetProperty("Kids"), 2));
         JsonElement subs = parent.GetProperty("Subs");
         Assert.Equal(1, subs.GetArrayLength());
         Assert.Equal(2, subs[0].GetProperty("Id").GetInt32());
-        Assert.Equal(3, subs[0].GetProperty("Subs")[0].GetProperty("Id").GetInt32());
+        JsonElement level2 = subs[0].GetProperty("Subs");
+        Assert.Equal(1, level2.GetArrayLength());
+        Assert.Equal(3, level2[0].GetProperty("Id").GetInt32());
+        Assert.Equal(0, level2[0].GetProperty("Subs").GetArrayLength());
     }
 
     [Fact]

@@ -43,6 +43,8 @@ internal sealed class PolyParent
 {
     public int Id { get; set; }
     public string Name { get; set; } = "";
+    public int? SuperId { get; set; }
+    public List<PolyParent> Subs { get; set; } = new();
     public List<PolyKid> Kids { get; set; } = new();
     public List<PolyPlainKid> PlainKids { get; set; } = new();
 }
@@ -57,6 +59,7 @@ internal sealed class PolyDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<PolyParent>().HasMany(p => p.Kids).WithOne().HasForeignKey(k => k.ParentId);
+        b.Entity<PolyParent>().HasMany(p => p.Subs).WithOne().HasForeignKey(p => p.SuperId);
         b.Entity<PolyParent>().HasMany(p => p.PlainKids).WithOne().HasForeignKey(k => k.ParentId);
         b.Entity<PolyDerivedKid>();
     }
@@ -72,6 +75,7 @@ internal sealed class PolyParentProfile : EntitySetProfile<int, PolyParent>
         GetQueryable = () => db.PolyParents.AsQueryable();
         HasMany(x => x.Kids);
         HasMany(x => x.PlainKids);
+        HasMany(x => x.Subs);
     }
 }
 
@@ -107,6 +111,8 @@ public class PolymorphicExpandBenchmarks
     public int KidsPerParent { get; set; }
 
     private const string PolyUrl = "PolyParents?$orderby=Id&$top=20&$expand=Kids";
+    private const string LevelsUrl = "PolyParents?$orderby=Id&$top=20&$expand=Subs($levels=2)";
+    private const string PolyLevelsUrl = "PolyParents?$orderby=Id&$top=20&$expand=Kids,Subs($levels=2)";
     private const string PlainUrl = "PolyParents?$orderby=Id&$top=20&$expand=PlainKids";
 
     private WebApplication _app = null!;
@@ -139,7 +145,8 @@ public class PolymorphicExpandBenchmarks
             int id = 1;
             for (int p = 1; p <= ParentCount; p++)
             {
-                db.PolyParents.Add(new PolyParent { Id = p, Name = $"Parent {p}" });
+                db.PolyParents.Add(new PolyParent { Id = p, Name = $"Parent {p}", SuperId = p > 1 ? p - 1 : null });
+                await db.SaveChangesAsync();
                 for (int k = 0; k < KidsPerParent; k++, id++)
                 {
                     db.PolyKids.Add(k % 2 == 0
@@ -156,6 +163,13 @@ public class PolymorphicExpandBenchmarks
 
         // Both arms must return every kid row; the derived members are deliberately NOT gated here,
         // so the same class can be run on the pre-fix commit.
+        foreach (string url in new[] { LevelsUrl, PolyLevelsUrl })
+        {
+            using HttpResponseMessage levels = await _client.GetAsync(url);
+            if (!levels.IsSuccessStatusCode)
+                throw new InvalidOperationException($"{url} returned {(int)levels.StatusCode}.");
+        }
+
         foreach (string url in new[] { PolyUrl, PlainUrl })
         {
             using HttpResponseMessage response = await _client.GetAsync(url);
@@ -181,6 +195,12 @@ public class PolymorphicExpandBenchmarks
 
     [Benchmark, BenchmarkCategory("PolymorphicExpand")]
     public Task<string> PolymorphicTarget() => GetAsync(PolyUrl);
+
+    [Benchmark, BenchmarkCategory("PolymorphicExpand")]
+    public Task<string> LevelsOnly_Projection() => GetAsync(LevelsUrl);
+
+    [Benchmark, BenchmarkCategory("PolymorphicExpand")]
+    public Task<string> PolymorphicPlusLevels() => GetAsync(PolyLevelsUrl);
 
     private async Task<string> GetAsync(string url)
     {
