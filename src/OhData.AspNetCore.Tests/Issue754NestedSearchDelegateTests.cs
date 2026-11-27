@@ -28,7 +28,14 @@ public sealed class Issue754NestedSearchDelegateTests
 
     private static readonly N754Order[] Store = { new() { Id = 1 }, new() { Id = 2 } };
 
+    public sealed class N754Node
+    {
+        public int Id { get; set; }
+        public List<N754Node> Children { get; set; } = new();
+    }
+
     private static int s_delegateCalls;
+    private static int s_handlerCalls;
 
     private static Task<ILookup<int, N754Line>> Lines(IReadOnlyCollection<int> keys, CancellationToken ct)
     {
@@ -60,13 +67,48 @@ public sealed class Issue754NestedSearchDelegateTests
         }
     }
 
+    public sealed class NodeProfile : EntitySetProfile<int, N754Node>
+    {
+        public NodeProfile() : base(x => x.Id)
+        {
+            EntitySetName = "N754Nodes";
+            ExpandEnabled = true;
+            HasMany<N754Node>(
+                x => x.Children,
+                batchGetAll: (keys, ct) =>
+                {
+                    Interlocked.Increment(ref s_delegateCalls);
+                    return Task.FromResult(keys.Select(k => new N754Node { Id = k + 100 }).ToLookup(n => n.Id - 100));
+                });
+            GetQueryable = () => new[] { new N754Node { Id = 1 } }.AsQueryable();
+        }
+    }
+
+    public sealed class PriorityOneProfile : ODataEntitySetProfile<int, N754Order>
+    {
+        public PriorityOneProfile() : base(x => x.Id)
+        {
+            EntitySetName = "N754P1s";
+            ExpandEnabled = true;
+            HasMany(x => x.Lines);
+            GetODataQueryable = (options, _) =>
+            {
+                Interlocked.Increment(ref s_handlerCalls);
+                return Task.FromResult(new ODataQueryResult<N754Order> { Items = Store.AsQueryable() });
+            };
+        }
+    }
+
     private static Task<TestFixture> HostAsync()
     {
         Interlocked.Exchange(ref s_delegateCalls, 0);
+        Interlocked.Exchange(ref s_handlerCalls, 0);
         return TestHostBuilder.BuildAsync(b =>
         {
             b.AddEntitySetProfile<QueryableProfile>();
             b.AddEntitySetProfile<GetAllProfile>();
+            b.AddEntitySetProfile<NodeProfile>();
+            b.AddEntitySetProfile<PriorityOneProfile>();
         });
     }
 
@@ -85,6 +127,43 @@ public sealed class Issue754NestedSearchDelegateTests
         Assert.Contains("UnsupportedQueryOption", body, StringComparison.Ordinal);
         Assert.Contains("$search", body, StringComparison.Ordinal);
         Assert.Equal(0, Volatile.Read(ref s_delegateCalls));
+        Assert.Equal(0, Volatile.Read(ref s_handlerCalls));
+    }
+
+    [Fact]
+    public async Task ANestedSearch_AtDepthTwo_Is501_AndNoDelegateRuns()
+    {
+        TestFixture fx = await HostAsync();
+
+        HttpResponseMessage res = await fx.Client.GetAsync(
+            "/odata/N754Nodes?$expand=Children($expand=Children($search=zzz))");
+
+        Assert.Equal(HttpStatusCode.NotImplemented, res.StatusCode);
+        Assert.Equal(0, Volatile.Read(ref s_delegateCalls));
+    }
+
+    [Fact]
+    public async Task ANestedSearch_OnAPriorityOneRoute_Is501_AndTheProfileHandlerIsNotReached()
+    {
+        TestFixture fx = await HostAsync();
+
+        HttpResponseMessage res = await fx.Client.GetAsync("/odata/N754P1s?$expand=Lines($search=zzz)");
+
+        Assert.Equal(HttpStatusCode.NotImplemented, res.StatusCode);
+        Assert.Equal(0, Volatile.Read(ref s_handlerCalls));
+    }
+
+    [Theory]
+    [InlineData("/odata/N754GetAlls?$expand=Lines($filter=Sku eq 'S1')")]
+    [InlineData("/odata/N754Queryables(1)?$expand=Lines($filter=Sku eq 'S1')")]
+    public async Task ANestedFilter_OnTheOtherRoutes_StillAnswers200_AndReachesTheDelegate(string url)
+    {
+        TestFixture fx = await HostAsync();
+
+        HttpResponseMessage res = await fx.Client.GetAsync(url);
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.True(Volatile.Read(ref s_delegateCalls) > 0);
     }
 
     [Fact]
