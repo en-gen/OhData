@@ -34,12 +34,33 @@ public sealed class Issue754NestedSearchDelegateTests
         public List<N754Node> Children { get; set; } = new();
     }
 
-    private static int s_delegateCalls;
-    private static int s_handlerCalls;
+    // Counters are objects behind readonly statics, so tests mutate instance state, never a static field.
+    private sealed class Counter
+    {
+        private int _n;
+        public int Count => Volatile.Read(ref _n);
+        public void Hit() => Interlocked.Increment(ref _n);
+        public void Reset() => Interlocked.Exchange(ref _n, 0);
+    }
+
+    private static readonly Counter s_delegate = new();
+    private static readonly Counter s_queryable = new();
+    private static readonly Counter s_byId = new();
+    private static readonly Counter s_getAll = new();
+    private static readonly Counter s_priorityOne = new();
+
+    private static void AssertNoHandlerReached()
+    {
+        Assert.Equal(0, s_delegate.Count);
+        Assert.Equal(0, s_queryable.Count);
+        Assert.Equal(0, s_byId.Count);
+        Assert.Equal(0, s_getAll.Count);
+        Assert.Equal(0, s_priorityOne.Count);
+    }
 
     private static Task<ILookup<int, N754Line>> Lines(IReadOnlyCollection<int> keys, CancellationToken ct)
     {
-        Interlocked.Increment(ref s_delegateCalls);
+        s_delegate.Hit();
         return Task.FromResult(keys.Select(k => new { Key = k, Line = new N754Line { Id = k, Sku = "S" + k } })
             .ToLookup(x => x.Key, x => x.Line));
     }
@@ -51,8 +72,16 @@ public sealed class Issue754NestedSearchDelegateTests
             EntitySetName = "N754Queryables";
             ExpandEnabled = true;
             HasMany<N754Line>(x => x.Lines, batchGetAll: (keys, ct) => Lines(keys, ct));
-            GetQueryable = () => Store.AsQueryable();
-            GetById = (id, ct) => OhDataResult.Success<N754Order?>(Store.FirstOrDefault(o => o.Id == id));
+            GetQueryable = () =>
+            {
+                s_queryable.Hit();
+                return Store.AsQueryable();
+            };
+            GetById = (id, ct) =>
+            {
+                s_byId.Hit();
+                return OhDataResult.Success<N754Order?>(Store.FirstOrDefault(o => o.Id == id));
+            };
         }
     }
 
@@ -63,7 +92,11 @@ public sealed class Issue754NestedSearchDelegateTests
             EntitySetName = "N754GetAlls";
             ExpandEnabled = true;
             HasMany<N754Line>(x => x.Lines, batchGetAll: (keys, ct) => Lines(keys, ct));
-            GetAll = ct => OhDataResult.Success<IEnumerable<N754Order>>(Store);
+            GetAll = ct =>
+            {
+                s_getAll.Hit();
+                return OhDataResult.Success<IEnumerable<N754Order>>(Store);
+            };
         }
     }
 
@@ -77,7 +110,7 @@ public sealed class Issue754NestedSearchDelegateTests
                 x => x.Children,
                 batchGetAll: (keys, ct) =>
                 {
-                    Interlocked.Increment(ref s_delegateCalls);
+                    s_delegate.Hit();
                     return Task.FromResult(keys.Select(k => new N754Node { Id = k + 100 }).ToLookup(n => n.Id - 100));
                 });
             GetQueryable = () => new[] { new N754Node { Id = 1 } }.AsQueryable();
@@ -93,7 +126,7 @@ public sealed class Issue754NestedSearchDelegateTests
             HasMany(x => x.Lines);
             GetODataQueryable = (options, _) =>
             {
-                Interlocked.Increment(ref s_handlerCalls);
+                s_priorityOne.Hit();
                 return Task.FromResult(new ODataQueryResult<N754Order> { Items = Store.AsQueryable() });
             };
         }
@@ -101,8 +134,11 @@ public sealed class Issue754NestedSearchDelegateTests
 
     private static Task<TestFixture> HostAsync()
     {
-        Interlocked.Exchange(ref s_delegateCalls, 0);
-        Interlocked.Exchange(ref s_handlerCalls, 0);
+        s_delegate.Reset();
+        s_queryable.Reset();
+        s_byId.Reset();
+        s_getAll.Reset();
+        s_priorityOne.Reset();
         return TestHostBuilder.BuildAsync(b =>
         {
             b.AddEntitySetProfile<QueryableProfile>();
@@ -126,8 +162,7 @@ public sealed class Issue754NestedSearchDelegateTests
         Assert.Equal(HttpStatusCode.NotImplemented, res.StatusCode);
         Assert.Contains("UnsupportedQueryOption", body, StringComparison.Ordinal);
         Assert.Contains("$search", body, StringComparison.Ordinal);
-        Assert.Equal(0, Volatile.Read(ref s_delegateCalls));
-        Assert.Equal(0, Volatile.Read(ref s_handlerCalls));
+        AssertNoHandlerReached();
     }
 
     [Fact]
@@ -139,7 +174,7 @@ public sealed class Issue754NestedSearchDelegateTests
             "/odata/N754Nodes?$expand=Children($expand=Children($search=zzz))");
 
         Assert.Equal(HttpStatusCode.NotImplemented, res.StatusCode);
-        Assert.Equal(0, Volatile.Read(ref s_delegateCalls));
+        AssertNoHandlerReached();
     }
 
     [Fact]
@@ -150,7 +185,7 @@ public sealed class Issue754NestedSearchDelegateTests
         HttpResponseMessage res = await fx.Client.GetAsync("/odata/N754P1s?$expand=Lines($search=zzz)");
 
         Assert.Equal(HttpStatusCode.NotImplemented, res.StatusCode);
-        Assert.Equal(0, Volatile.Read(ref s_handlerCalls));
+        AssertNoHandlerReached();
     }
 
     [Theory]
@@ -163,7 +198,7 @@ public sealed class Issue754NestedSearchDelegateTests
         HttpResponseMessage res = await fx.Client.GetAsync(url);
 
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
-        Assert.True(Volatile.Read(ref s_delegateCalls) > 0);
+        Assert.True(s_delegate.Count > 0);
     }
 
     [Fact]
@@ -174,6 +209,6 @@ public sealed class Issue754NestedSearchDelegateTests
         HttpResponseMessage res = await fx.Client.GetAsync("/odata/N754Queryables?$expand=Lines($filter=Sku eq 'S1')");
 
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
-        Assert.True(Volatile.Read(ref s_delegateCalls) > 0);
+        Assert.True(s_delegate.Count > 0);
     }
 }
