@@ -128,8 +128,22 @@ public sealed class Issue792ExceptionRuleScopeTests
         using var res = await fx.Client.SendAsync(req);
         string text = await res.Content.ReadAsStringAsync();
         string message = "";
-        try { message = JsonDocument.Parse(text).RootElement.GetProperty("error").GetProperty("message").GetString() ?? ""; }
-        catch (Exception) { /* a 500 without the mapped envelope: leave empty, the status assertion reports it */ }
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("error", out var error)
+                && error.ValueKind == JsonValueKind.Object
+                && error.TryGetProperty("message", out var m)
+                && m.ValueKind == JsonValueKind.String)
+            {
+                message = m.GetString() ?? "";
+            }
+        }
+        catch (JsonException)
+        {
+            // a non-JSON body leaves the message empty; the status assertion reports it
+        }
         return (res.StatusCode, message);
     }
 
