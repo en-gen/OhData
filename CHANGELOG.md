@@ -807,6 +807,12 @@ status codes or headers.
 
 ### Fixed
 
+- **`/{Set}/$count` on a Priority-1 profile answered the `$top`/`$skip` window, not the total (#748).**
+  `?$top=2` over three rows returned `2`; it now returns `3`, equal to the bare `/$count`, with `$filter` still applied.
+  The route sets a count path before building the options so Microsoft's `ApplyTo` takes its count-request early return; `$select`, `$expand` and a malformed `$top` no longer reach a profile that hard-casts the `ApplyTo` result.
+  **BREAKING:** the profile now sees a count request throughout, so a bare `GET /Set/$count` goes from `200` to `500` when the profile's own `options.Validate` `AllowedQueryOptions` excludes `Count`.
+  Remedy: permit `AllowedQueryOptions.Count` in the profile's validation settings.
+
 - **`$select` and `$expand` dropped every multi-word property under a snake_case or kebab-case naming policy (#768).**
   The selected names are EDM identifiers (`FirstName`) and the payload keys are policy-converted (`first_name`);
   they were compared case-insensitively, which only lines up for camelCase, so `$select=FirstName` answered `200`

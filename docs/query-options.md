@@ -316,6 +316,15 @@ resource, not a query option) - on that route only `$filter` is gated, by `Filte
 > `q.OrderBy(…).LongCount()`, `q.Take(n).LongCount()` and `q.Skip(n).LongCount()` all send the
 > option along.
 >
+> On a Priority-1 profile the framework marks the request as a count request for the whole call, so
+> your `options.ApplyTo` ignores `$top`/`$skip`/`$orderby`/`$select`/`$expand` and the total comes back.
+> Code that reads `options.Top` or `options.Skip` directly, rather than through `ApplyTo`, still sees
+> the request's values.
+>
+> A Priority-1 profile that calls `options.Validate` with `AllowedQueryOptions` that exclude `Count` fails
+> every `/$count` request with `500`, including a bare one, because the validator sees a count request.
+> Include `AllowedQueryOptions.Count` in those settings.
+>
 > `Accept: application/xml` on this segment still answers `406` — §11.2.9 forbids the *client* to
 > negotiate, which is not a licence for the server to ship a media type the client refused.
 >
