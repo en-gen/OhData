@@ -5704,6 +5704,8 @@ internal static class OhDataEndpointFactory
                         ValidateEdmRequiredProperties(edmRequiredProps, model, bodyRequiredNamed);
                     if (putNullabilityFail is not null) return putNullabilityFail;
 
+                    // The body is fully parsed; everything below is user or server code.
+                    runningUserCode = true;
                     string bodyKeyStr = s.InvokeGetKeyString(model);
                     string parsedKeyStr = string.Format(CultureInfo.InvariantCulture, "{0}", parsedKey);
                     if (!string.Equals(parsedKeyStr, bodyKeyStr, StringComparison.Ordinal))
@@ -5727,7 +5729,6 @@ internal static class OhDataEndpointFactory
                         }
                     }
 
-                    runningUserCode = true;
                     object? result = await WithExceptionMapping(s.InvokePutAsync(parsedKey!, model, ct), source, ctx, OhDataOperation.Update, key: parsedKey, model: model);
 
                     // Gap 3: Upsert via PUT (§11.4.4) — create entity when result is null and AllowUpsert enabled
@@ -5870,7 +5871,10 @@ internal static class OhDataEndpointFactory
                     }
 
                     // ETag check via If-Match header -- handler owns fetch-for-merge.
+                    // User code (GetById, the ETag selector): its JsonException is a server fault.
+                    runningUserCode = true;
                     var etagCheck = await CheckETagAsync(source, s, ctx, parsedKey!, ct);
+                    runningUserCode = false;
                     if (etagCheck is not null) return etagCheck;
 
                     // Build Delta<TModel>: only properties present in the request body are set.
