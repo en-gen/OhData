@@ -4940,6 +4940,8 @@ internal static class OhDataEndpointFactory
         {
             var countCollRb = entityGroup.MapGet("/$count", async (HttpContext ctx, CancellationToken ct) =>
             {
+                var odataFeature = Microsoft.AspNetCore.OData.Extensions.HttpContextExtensions.ODataFeature(ctx);
+                var priorPath = odataFeature.Path;
                 try
                 {
                     // #353: this route applies $filter and counts; it does not search or
@@ -4962,6 +4964,14 @@ internal static class OhDataEndpointFactory
                     if (countCapabilityError is not null) return countCapabilityError;
 
                     var s = ResolveHandlers(ctx);
+                    // #748: a Priority-1 profile's ApplyTo skips $top/$skip only on a count request, so
+                    // the path must be a count path at construction (Count is synthesised then) and
+                    // stay set through ApplyTo (it re-reads IsCountRequest); restored in the finally.
+                    if (s is IODataEntitySetEndpointSource { HasGetODataQueryable: true })
+                    {
+                        odataFeature.Path = new ODataPath(CountSegment.Instance);
+                    }
+
                     // #402: broad-catch-to-400 around exactly the construction. See TryBuildQueryOptions.
                     if (!TryBuildQueryOptions<TModel>(registration.EdmModel, ctx, logger,
                             out ODataQueryOptions<TModel>? options, out IResult? optionsError))
@@ -4983,26 +4993,7 @@ internal static class OhDataEndpointFactory
                     if (s is IODataEntitySetEndpointSource odataCountSrc && odataCountSrc.HasGetODataQueryable)
                     {
                         // Priority 1 profiles apply query options themselves; don't re-apply $filter.
-                        // #748: MS's ApplyTo skips $top/$skip only for a count request, which needs the
-                        // path set BEFORE construction (it synthesises $count then), so rebuild once.
-                        var feature = Microsoft.AspNetCore.OData.Extensions.HttpContextExtensions.ODataFeature(ctx);
-                        var priorPath = feature.Path;
-                        feature.Path = new ODataPath(CountSegment.Instance);
-                        ODataQueryResult<object> countResult;
-                        try
-                        {
-                            if (!TryBuildQueryOptions<TModel>(registration.EdmModel, ctx, logger,
-                                    out ODataQueryOptions<TModel>? countOptions, out optionsError))
-                            {
-                                return optionsError;
-                            }
-
-                            countResult = await AsHandlerFault(WithExceptionMapping(odataCountSrc.InvokeGetODataQueryableAsync(countOptions, ct), source, ctx, OhDataOperation.Read));
-                        }
-                        finally
-                        {
-                            feature.Path = priorPath;
-                        }
+                        var countResult = await AsHandlerFault(WithExceptionMapping(odataCountSrc.InvokeGetODataQueryableAsync(options, ct), source, ctx, OhDataOperation.Read));
                         var queryable = countResult.Items is IQueryable<TModel> tq
                             ? tq
                             : countResult.Items.Cast<TModel>().AsQueryable();
@@ -5050,6 +5041,10 @@ internal static class OhDataEndpointFactory
                 catch (QueryOptionGate.FilterArithmeticFaultException ex)
                 {
                     return ODataError(400, "InvalidQueryOption", ex.Message);
+                }
+                finally
+                {
+                    odataFeature.Path = priorPath;
                 }
             }).WithTags(name).Produces<long>(200, "text/plain").Produces(400).Produces(501)
               .WithMetadata(new OhDataQueryOptionsMetadata(
